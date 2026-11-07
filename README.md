@@ -1,4 +1,4 @@
-# Agentic X - Studio 67 (Five Notebooks, No Mock)
+# Agentic X - Studio 67 
 
 Python Multi-Agent System prototype for event crisis resolution. Four independent agents: Creative (LLM), Finance (deterministic), Safety (deterministic hard veto), Operations (LLM + resource tools). ACL-like messages and an engine that returns `AGREED` or `ESCALATED` from real evaluations.
 
