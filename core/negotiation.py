@@ -2,6 +2,7 @@
 """Adaptive multi-agent negotiation for Studio 67."""
 
 import math
+import time
 from core.communication import MessageBus
 from core.models import RunResult, AgentEvaluation
 
@@ -158,10 +159,38 @@ class NegotiationEngine:
 
         return evaluations
 
+
+    @staticmethod
+    def _deadline_check(duration, initial_minutes, elapsed_seconds):
+        """Check execution feasibility after negotiation time."""
+
+        try:
+            duration = float(duration)
+            initial_minutes = float(initial_minutes)
+            elapsed_seconds = float(elapsed_seconds)
+        except (TypeError, ValueError, OverflowError):
+            return False, 0.0, float("inf")
+
+        values = [duration, initial_minutes, elapsed_seconds]
+
+        if not all(math.isfinite(v) and v >= 0 for v in values):
+            return False, 0.0, duration
+
+        remaining = max(
+            0.0,
+            initial_minutes - elapsed_seconds / 60.0
+        )
+
+        return duration <= remaining, remaining, duration
+
     def run(self, case, options):
         """Run adaptive negotiation across multiple rounds."""
 
         bus = MessageBus(case["case_id"])
+        started_at = time.perf_counter()
+        initial_minutes = self._number(
+            case.get("time_left_min")
+        )
         remaining = list(options)
         all_evaluations = []
         objections = set()
@@ -205,9 +234,50 @@ class NegotiationEngine:
             )
 
             # Collect real decisions from all four agents
-            evaluations = self._evaluate_proposal(
-                case, proposal, round_number, bus
+            current_case = dict(case)
+
+            elapsed_minutes = (
+                time.perf_counter() - started_at
+            ) / 60.0
+
+            current_case["time_left_min"] = max(
+                0.0,
+                initial_minutes - elapsed_minutes
             )
+
+            try:
+                evaluations = self._evaluate_proposal(
+                    current_case, proposal, round_number, bus
+                )
+
+            except Exception as exc:
+                error_type = type(exc).__name__
+
+                bus.send(
+                    round_number,
+                    "Coordinator",
+                    "ALL",
+                    "INFORM",
+                    f"Agent evaluation failed: {error_type}"
+                )
+
+                bus.send(
+                    round_number,
+                    "Coordinator",
+                    "Human Manager",
+                    "REQUEST",
+                    "Human review required after agent failure"
+                )
+
+                return RunResult(
+                    case_id=case["case_id"],
+                    status="FAILED",
+                    selected_option_id=None,
+                    rounds=round_number,
+                    evaluations=all_evaluations,
+                    messages=bus.messages,
+                    reason=f"Agent evaluation error: {error_type}"
+                )
 
             all_evaluations.extend(evaluations)
 
@@ -216,8 +286,29 @@ class NegotiationEngine:
                 if not e.approved
             ]
 
-            # Agreement requires approval from all four agents
-            if not rejected:
+            # Recheck the deadline after agent evaluations
+            deadline_ok, remaining_minutes, duration = (
+                self._deadline_check(
+                    proposal.get("duration_min"),
+                    initial_minutes,
+                    time.perf_counter() - started_at
+                )
+            )
+
+            if not deadline_ok:
+                bus.send(
+                    round_number,
+                    "Coordinator",
+                    "ALL",
+                    "REFUSE",
+                    f"Deadline constraint failed for "
+                    f"{proposal['option_id']}: "
+                    f"{duration:.2f} minutes required, "
+                    f"{remaining_minutes:.2f} available."
+                )
+
+            # Agreement requires approval and deadline compliance
+            if not rejected and deadline_ok:
 
                 bus.send(
                     round_number,
@@ -242,6 +333,9 @@ class NegotiationEngine:
                 evaluation.agent
                 for evaluation in rejected
             }
+
+            if not deadline_ok:
+                objections.add("Operations")
 
             bus.send(
                 round_number,
