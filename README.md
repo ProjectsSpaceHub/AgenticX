@@ -30,6 +30,8 @@ Four specialized agents independently evaluate proposed solutions. When disagree
 | **Safety** | Rule-Based | Verifies safety conditions, permits, and risk limits. |
 | **Operations** | Hybrid (LLM + Rules) | Evaluates operational feasibility, staffing, time, and resources. |
 
+<img width="929" height="150" alt="image" src="https://github.com/user-attachments/assets/b6f8cca2-7a89-4aae-8607-14c098244db1" />
+
 ## Dataset
 
 The project uses a synthetic dataset containing **150 crisis scenarios and 450 candidate solutions**, covering three categories:
