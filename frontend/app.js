@@ -1,5 +1,5 @@
 
- // Agentic X — Real Agent Explanations
+ // Agentic X — Interactive Multi-Agent Frontend
 const $ = id => document.getElementById(id);
 
 const agentNames = [
@@ -40,14 +40,15 @@ let agentClickProgress = {};
 let agentRoundLabel = {};
 
 function text(id, value) {
-  const el = $(id);
-  if (el) el.textContent = String(value);
+  const element = $(id);
+  if (element) element.textContent = String(value);
 }
 
 function resetStatuses() {
   agentsState = Object.fromEntries(
     agentNames.map(name => [name, 'Idle'])
   );
+
   agentSpeech = {};
   agentClickProgress = {};
   agentRoundLabel = {};
@@ -58,13 +59,9 @@ function compactReason(value) {
     .replace(/\s+/g, ' ')
     .trim();
 
-  const start = clean.includes('Gemini assessment:')
-    ? clean.split('Gemini assessment:').pop()
+  return clean.length > 140
+    ? clean.slice(0, 137).trimEnd() + '…'
     : clean;
-
-  return start.length > 145
-    ? start.slice(0, 142).trimEnd() + '…'
-    : start;
 }
 
 function formatSar(value) {
@@ -103,6 +100,7 @@ function showFullExplanation(name, evaluation, round) {
   panel.replaceChildren();
 
   const heading = document.createElement('strong');
+
   heading.textContent =
     `${name} Agent — ` +
     `${evaluation.approved ? 'Accepted' : 'Rejected'} ` +
@@ -129,8 +127,9 @@ function safeMessageElement(message, index) {
     agentColors[message.sender] || '#ded0ff'
   );
 
-  const num = document.createElement('span');
-  num.textContent = String(index + 1).padStart(2, '0');
+  const number = document.createElement('span');
+  number.textContent =
+    String(index + 1).padStart(2, '0');
 
   const sender = document.createElement('strong');
   sender.textContent = message.sender;
@@ -144,7 +143,7 @@ function safeMessageElement(message, index) {
   content.className = 'msg';
   content.textContent = message.content;
 
-  row.append(num, sender, details, content);
+  row.append(number, sender, details, content);
   return row;
 }
 
@@ -169,6 +168,7 @@ function renderLog() {
   });
 }
 
+// Agent speech is displayed ONLY after clicking.
 function renderAgents() {
   const root = $('agents');
   root.replaceChildren();
@@ -177,7 +177,9 @@ function renderAgents() {
     const holder = document.createElement('div');
     holder.className = 'agent';
 
-    if (selectedAgent === name) {
+    const isSelected = selectedAgent === name;
+
+    if (isSelected) {
       holder.classList.add('selected');
     }
 
@@ -188,22 +190,26 @@ function renderAgents() {
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
 
-    bubble.textContent = agentSpeech[name] || (
-      agentsState[name] === 'Evaluating'
-        ? 'Reviewing the proposal…'
-        : agentsState[name] === 'Idle'
-          ? (
-              replayReady
-                ? 'Click to read my evaluation.'
-                : 'Ready to evaluate.'
-            )
-          : agentsState[name]
-    );
-
-    bubble.title = agentSpeech[name] || '';
+    if (isSelected && agentSpeech[name]) {
+      bubble.textContent = agentSpeech[name];
+      bubble.title = agentSpeech[name];
+    } else if (replayReady) {
+      bubble.textContent = 'Click to view explanation';
+      bubble.title = '';
+    } else if (agentsState[name] === 'Evaluating') {
+      bubble.textContent = 'Evaluating...';
+      bubble.title = '';
+    } else if (activeJob) {
+      bubble.textContent = 'Waiting for evaluation...';
+      bubble.title = '';
+    } else {
+      bubble.textContent = 'Ready to evaluate.';
+      bubble.title = '';
+    }
 
     const button = document.createElement('button');
     button.type = 'button';
+
     button.setAttribute(
       'aria-label',
       `Select ${name} Agent`
@@ -229,10 +235,9 @@ function renderAgents() {
 
     button.append(robot, label, state);
 
-    button.addEventListener(
-      'click',
-      () => handleAgentClick(name)
-    );
+    button.addEventListener('click', () => {
+      handleAgentClick(name);
+    });
 
     holder.append(bubble, button);
     root.append(holder);
@@ -242,10 +247,7 @@ function renderAgents() {
 function controls() {
   updateChanged();
 
-  text(
-    'budgetOut',
-    formatSar($('budget').value)
-  );
+  text('budgetOut', formatSar($('budget').value));
 
   text(
     'timeOut',
@@ -273,7 +275,13 @@ function originalTime(caseData) {
 }
 
 function originalEquipment(caseData) {
-  return Boolean(caseData.backup_available);
+  const value = caseData.backup_available;
+
+  return (
+    value === true ||
+    value === 1 ||
+    String(value).toLowerCase() === 'true'
+  );
 }
 
 function renderCaseOptions(options) {
@@ -285,6 +293,7 @@ function renderCaseOptions(options) {
     card.className = 'scenario-option';
 
     const heading = document.createElement('strong');
+
     heading.textContent =
       `${option.option_id || ''} · ` +
       `${option.option_name || ''}`;
@@ -392,6 +401,7 @@ async function selectCase() {
     if (serial !== caseRequestSerial) return;
 
     baseCase = data;
+
     const caseData = data.case;
 
     text(
@@ -441,8 +451,10 @@ async function selectType() {
 
   records.forEach(record => {
     const option = document.createElement('option');
+
     option.value = record.case_id;
     option.textContent = record.case_id;
+
     select.append(option);
   });
 
@@ -468,6 +480,7 @@ async function initCatalog() {
     }
 
     scenarioGroups = await response.json();
+
     await selectType();
 
   } catch (error) {
@@ -480,6 +493,7 @@ async function initCatalog() {
       'Cannot load cases from Python API.';
 
     $('catalogNotice').style.display = 'block';
+
     $('run').disabled = true;
   }
 }
@@ -490,9 +504,8 @@ function evaluationsFor(name) {
 }
 
 function financeSummary(evaluation) {
-  const info = latestResult
-    ?.finance_breakdown
-    ?.[evaluation.option_id];
+  const info =
+    latestResult?.finance_breakdown?.[evaluation.option_id];
 
   if (!info) {
     return compactReason(evaluation.reason);
@@ -516,10 +529,7 @@ function showDecision(result) {
 
   const agreed = result.status === 'AGREED';
 
-  text(
-    'status',
-    agreed ? 'AGREED' : result.status
-  );
+  text('status', agreed ? 'AGREED' : result.status);
 
   $('status').className =
     agreed ? 'decision' : '';
@@ -601,7 +611,6 @@ async function pollJob(jobId) {
 
         if (!evaluations.length) {
           agentsState[name] = 'Idle';
-          agentSpeech[name] = 'No evaluation recorded.';
           return;
         }
 
@@ -613,6 +622,7 @@ async function pollJob(jobId) {
         agentRoundLabel[name] =
           `R${evaluations.length} · ${last.option_id}`;
 
+        // Store the actual explanation but do not show it yet.
         agentSpeech[name] =
           name === 'Finance'
             ? financeSummary(last)
@@ -622,8 +632,11 @@ async function pollJob(jobId) {
       showDecision(job.result);
 
       $('run').disabled = false;
+
+      // No agent is selected, so no explanation appears.
       renderAgents();
       renderLog();
+
       return;
     }
 
@@ -632,6 +645,7 @@ async function pollJob(jobId) {
       activeJob = null;
 
       text('status', 'EXECUTION ERROR');
+
       text(
         'explanation',
         job.error || 'See Python backend logs.'
@@ -639,12 +653,16 @@ async function pollJob(jobId) {
 
       $('run').disabled = false;
       renderLog();
+
       return;
     }
 
     agentNames.forEach(name => {
       const status = job.agent_status?.[name];
-      if (status) agentsState[name] = status;
+
+      if (status) {
+        agentsState[name] = status;
+      }
     });
 
     const current = job.current_option;
@@ -738,28 +756,28 @@ async function run() {
   }
 }
 
+// Only the clicked agent shows its reasoning.
+// Clicking a different agent hides the previous explanation.
 function handleAgentClick(name) {
+  if (activeJob || !replayReady || !latestResult) {
+    return;
+  }
+
+  // Clicking the selected agent again closes it.
+  if (selectedAgent === name) {
+    selectedAgent = null;
+    clearExplanation();
+    renderAgents();
+    return;
+  }
+
   selectedAgent = name;
-
-  if (activeJob) {
-    agentSpeech[name] =
-      'The real agent is still evaluating...';
-
-    renderAgents();
-    return;
-  }
-
-  if (!replayReady || !latestResult) {
-    renderAgents();
-    return;
-  }
+  clearExplanation();
 
   const evaluations = evaluationsFor(name);
 
   if (!evaluations.length) {
-    agentSpeech[name] =
-      'No evaluation recorded for this agent.';
-
+    agentSpeech[name] = 'No evaluation recorded.';
     renderAgents();
     return;
   }
@@ -832,8 +850,15 @@ $('reset').addEventListener('click', reset);
   $(id).addEventListener('input', controls);
 });
 
-$('scenario').addEventListener('change', selectCase);
-$('scenarioType').addEventListener('change', selectType);
+$('scenario').addEventListener(
+  'change',
+  selectCase
+);
+
+$('scenarioType').addEventListener(
+  'change',
+  selectType
+);
 
 $('resetOriginal').addEventListener(
   'click',
