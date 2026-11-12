@@ -5,20 +5,18 @@ import json
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 from pydantic import BaseModel, Field
-
 from core.models import AgentEvaluation
 
 
 class CreativeOpinion(BaseModel):
     approved: bool
     score: float = Field(ge=0, le=100)
-    reason: str
+    reason: str = Field(min_length=1)
 
 
 class CreativeAgent:
     name = "Creative"
 
-    # Creative only receives relevant information.
     CASE_FIELDS = (
         "case_id",
         "scenario",
@@ -43,17 +41,24 @@ class CreativeAgent:
         "creative_impact",
     )
 
-    def __init__(self):
+    def __init__(self, llm=None):
+        if llm is not None:
+            self.llm = llm
+            return
+
         if not os.getenv("GOOGLE_API_KEY"):
-            raise RuntimeError(
-                "GOOGLE_API_KEY is missing."
-            )
+            raise RuntimeError("GOOGLE_API_KEY is missing.")
+
+        model = os.getenv(
+            "AGENTICX_MODEL",
+            "gemini-3.5-flash-lite"
+        )
 
         self.llm = ChatGoogleGenerativeAI(
-            model=os.getenv(
-                "AGENTICX_MODEL",
-                "gemini-3.5-flash-lite"
-            )
+            model=model,
+            temperature=0,
+            timeout=45,
+            max_retries=1,
         ).with_structured_output(
             CreativeOpinion,
             method="json_schema"
@@ -64,8 +69,7 @@ class CreativeAgent:
         return {
             field: data[field]
             for field in allowed_fields
-            if field in data
-            and data[field] is not None
+            if field in data and data[field] is not None
         }
 
     @staticmethod
@@ -98,13 +102,11 @@ class CreativeAgent:
         option_id = str(option["option_id"])
 
         creative_case = self._creative_view(
-            case,
-            self.CASE_FIELDS
+            case, self.CASE_FIELDS
         )
 
         creative_option = self._creative_view(
-            option,
-            self.OPTION_FIELDS
+            option, self.OPTION_FIELDS
         )
 
         quality = self._valid_quality(
@@ -120,36 +122,57 @@ class CreativeAgent:
         quality_ok = quality >= minimum_quality
 
         prompt = (
-            "You are the Creative Agent of Studio 67.\n"
-            "Evaluate the proposed solution for the "
-            "current event crisis.\n\n"
+            "You are the Creative Agent in Studio 67, "
+            "a multi-agent event crisis management system.\n\n"
 
-            "YOUR RESPONSIBILITIES:\n"
-            "1. Incident relevance.\n"
-            "2. Creative suitability.\n"
-            "3. Event quality.\n"
-            "4. Audience experience.\n\n"
+            "YOUR ROLE:\n"
+            "You are responsible for incident relevance, "
+            "creative suitability, event quality, "
+            "and audience experience.\n\n"
+
+            "EVALUATION TASK:\n"
+            "1. Explain the actual incident and how the "
+            "proposed solution addresses it.\n"
+            "2. Evaluate whether this response preserves "
+            "the event experience and event quality.\n"
+            "3. Assess how appropriate the solution is "
+            "for the stated audience and event context.\n"
+            "4. Identify a meaningful creative limitation "
+            "or tradeoff if one is supported by the data.\n"
+            "5. Decide whether to ACCEPT or REJECT.\n\n"
 
             "DECISION RULES:\n"
-            "- Assess whether the solution addresses "
+            "- Reject solutions that fail to address "
             "the actual incident.\n"
-            "- Consider the event and audience experience.\n"
-            "- Use the provided quality information.\n"
-            "- Reject solutions that do not adequately "
-            "address the incident.\n"
-            "- Explain acceptance or rejection clearly.\n"
-            "- Do not invent missing facts.\n\n"
+            "- Consider the provided quality score "
+            "and minimum required quality.\n"
+            "- Do not approve solely because the "
+            "quality score is high.\n"
+            "- Base the decision only on the case "
+            "and option evidence.\n"
+            "- Do not invent missing context.\n\n"
 
             "ROLE BOUNDARIES:\n"
-            "- Do not assess budgets, prices or costs.\n"
-            "- Do not assess safety or permits.\n"
-            "- Do not assess staff, equipment or time.\n"
-            "- Stay within creative responsibilities.\n\n"
+            "- Do not assess budget, price, or cost.\n"
+            "- Do not assess safety, risk, or permits.\n"
+            "- Do not assess staff, equipment, "
+            "resource availability, or execution time.\n"
+            "- Focus strictly on the creative role.\n\n"
 
-            "Return:\n"
+            "REASONING STYLE:\n"
+            "Write 2 to 3 meaningful English sentences "
+            "that explain WHY the solution is accepted "
+            "or rejected in this specific incident. "
+            "Connect the proposed action to the event "
+            "experience and audience impact. "
+            "Avoid generic statements, numerical-only "
+            "comparisons, repetitive templates, "
+            "and unsupported claims.\n\n"
+
+            "Return structured fields:\n"
             "- approved: boolean\n"
-            "- score: number between 0 and 100\n"
-            "- reason: short explanation\n\n"
+            "- score: number from 0 to 100\n"
+            "- reason: detailed but concise justification\n\n"
 
             "CASE:\n"
             + json.dumps(
@@ -165,52 +188,40 @@ class CreativeAgent:
             )
         )
 
-        # Genuine Gemini evaluation.
         answer = self.llm.invoke(prompt)
 
-        # Quality is a mandatory condition.
-        approved = bool(
-            answer.approved and quality_ok
-        )
+        if isinstance(answer, dict):
+            answer = CreativeOpinion.model_validate(answer)
+        elif not isinstance(answer, CreativeOpinion):
+            answer = CreativeOpinion.model_validate(
+                answer.model_dump()
+            )
 
-        # Explain the actual comparison.
-        comparison = (
-            f"Solution quality: {quality:g}/100. "
-            f"Minimum required: {minimum_quality:g}/100. "
-        )
+        approved = bool(answer.approved and quality_ok)
+        llm_reason = answer.reason.strip()
 
         if not quality_ok:
             reason = (
-                comparison
-                + "The solution is below the minimum "
-                "quality requirement. Rejected."
+                f"The proposed solution does not meet "
+                f"the minimum event quality requirement "
+                f"({quality:g} compared with "
+                f"{minimum_quality:g}). "
+                f"Gemini's creative assessment: "
+                f"{llm_reason} "
+                f"The mandatory quality gate therefore "
+                f"rejects this option."
             )
-
         else:
-            llm_reason = (answer.reason or "").strip()
-
-            if not llm_reason:
-                llm_reason = (
-                    "No detailed creative justification "
-                    "was provided."
-                )
-
-            quality_status = (
-                "The quality requirement is met. "
-            )
-
-            decision_status = (
-                "Creative assessment approved."
+            status = (
+                "The Creative Agent approves this option."
                 if approved
-                else "Creative assessment rejected."
+                else "The Creative Agent rejects this option."
             )
 
             reason = (
-                comparison
-                + quality_status
-                + llm_reason
-                + " "
-                + decision_status
+                f"{llm_reason} "
+                f"The minimum quality requirement is met. "
+                f"{status}"
             )
 
         return AgentEvaluation(
@@ -221,5 +232,6 @@ class CreativeAgent:
             reason=reason,
             blocking=False
         )
+
 
 
