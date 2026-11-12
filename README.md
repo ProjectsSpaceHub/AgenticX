@@ -5,6 +5,7 @@
 *Four specialized agents. One coordinated decision.*
 
 ---
+<img width="945" height="452" alt="image" src="https://github.com/user-attachments/assets/370ee2ef-92b5-4122-8757-6991bbbb4bed" />
 
 ## Overview
 
