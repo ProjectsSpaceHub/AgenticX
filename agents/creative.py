@@ -18,9 +18,7 @@ class CreativeOpinion(BaseModel):
 class CreativeAgent:
     name = "Creative"
 
-    # Only these fields are visible to Creative.
-    # Finance, Safety, and Operations have separate responsibilities.
-
+    # Creative only receives relevant information.
     CASE_FIELDS = (
         "case_id",
         "scenario",
@@ -48,8 +46,7 @@ class CreativeAgent:
     def __init__(self):
         if not os.getenv("GOOGLE_API_KEY"):
             raise RuntimeError(
-                "GOOGLE_API_KEY is missing. "
-                "Please configure your Gemini API key."
+                "GOOGLE_API_KEY is missing."
             )
 
         self.llm = ChatGoogleGenerativeAI(
@@ -64,11 +61,6 @@ class CreativeAgent:
 
     @staticmethod
     def _creative_view(data, allowed_fields):
-        """
-        Expose only fields relevant to Creative.
-        All financial and operational constraints
-        remain outside this agent's observation.
-        """
         return {
             field: data[field]
             for field in allowed_fields
@@ -78,18 +70,14 @@ class CreativeAgent:
 
     @staticmethod
     def _valid_quality(value, field_name):
-        """
-        Validate quality values without silently
-        replacing missing information with zero.
-        """
         if value is None or isinstance(value, bool):
             raise ValueError(
-                f"{field_name} must be a valid number."
+                f"{field_name} must be numeric."
             )
 
         try:
             number = float(value)
-        except (TypeError, ValueError, OverflowError):
+        except (ValueError, TypeError, OverflowError):
             raise ValueError(
                 f"{field_name} must be numeric."
             ) from None
@@ -99,21 +87,14 @@ class CreativeAgent:
                 f"{field_name} must be finite."
             )
 
+        if not 0 <= number <= 100:
+            raise ValueError(
+                f"{field_name} must be between 0 and 100."
+            )
+
         return number
 
     def evaluate(self, case, option):
-        """
-        Evaluate:
-        - Incident relevance
-        - Creative solution suitability
-        - Event quality
-        - Audience experience
-
-        Budget decisions belong to Finance.
-        Safety decisions belong to Safety.
-        Resource feasibility belongs to Operations.
-        """
-
         option_id = str(option["option_id"])
 
         creative_case = self._creative_view(
@@ -126,56 +107,49 @@ class CreativeAgent:
             self.OPTION_FIELDS
         )
 
-        quality_score = self._valid_quality(
+        quality = self._valid_quality(
             option.get("quality_score"),
             "quality_score"
         )
 
-        required_quality = self._valid_quality(
-            case.get("required_quality_min", 0),
+        minimum_quality = self._valid_quality(
+            case.get("required_quality_min"),
             "required_quality_min"
         )
 
-        quality_ok = (
-            quality_score >= required_quality
-        )
+        quality_ok = quality >= minimum_quality
 
         prompt = (
-            "You are the Creative Agent for Studio 67, "
-            "a multi-agent event crisis management system.\n\n"
+            "You are the Creative Agent of Studio 67.\n"
+            "Evaluate the proposed solution for the "
+            "current event crisis.\n\n"
 
-            "YOUR RESPONSIBILITY:\n"
-            "Evaluate the proposed solution ONLY from "
-            "a creative and audience-experience perspective.\n\n"
+            "YOUR RESPONSIBILITIES:\n"
+            "1. Incident relevance.\n"
+            "2. Creative suitability.\n"
+            "3. Event quality.\n"
+            "4. Audience experience.\n\n"
 
-            "Evaluate:\n"
-            "1. Does the solution address the incident?\n"
-            "2. Does it preserve event quality?\n"
-            "3. Does it maintain audience experience?\n"
-            "4. Is the proposed solution appropriate "
-            "for the event situation?\n\n"
+            "DECISION RULES:\n"
+            "- Assess whether the solution addresses "
+            "the actual incident.\n"
+            "- Consider the event and audience experience.\n"
+            "- Use the provided quality information.\n"
+            "- Reject solutions that do not adequately "
+            "address the incident.\n"
+            "- Explain acceptance or rejection clearly.\n"
+            "- Do not invent missing facts.\n\n"
 
-            "STRICT ROLE BOUNDARIES:\n"
-            "- Do NOT evaluate budgets, prices, costs, "
-            "savings, or financial feasibility.\n"
-            "- Do NOT make safety or permit decisions.\n"
-            "- Do NOT evaluate staff, equipment availability, "
-            "execution time, or operational feasibility.\n"
-            "- Financial decisions belong to Finance.\n"
-            "- Safety decisions belong to Safety.\n"
-            "- Operational decisions belong to Operations.\n"
-            "- Never invent missing information.\n"
-            "- Base your decision only on the provided "
-            "creative information.\n"
-            "- Reject a solution if it does not adequately "
-            "address the incident or preserve event quality.\n"
-            "- Explain your decision using only creative "
-            "or audience-experience reasons.\n\n"
+            "ROLE BOUNDARIES:\n"
+            "- Do not assess budgets, prices or costs.\n"
+            "- Do not assess safety or permits.\n"
+            "- Do not assess staff, equipment or time.\n"
+            "- Stay within creative responsibilities.\n\n"
 
-            "Return structured output containing:\n"
+            "Return:\n"
             "- approved: boolean\n"
-            "- score: number from 0 to 100\n"
-            "- reason: short, clear explanation\n\n"
+            "- score: number between 0 and 100\n"
+            "- reason: short explanation\n\n"
 
             "CASE:\n"
             + json.dumps(
@@ -191,27 +165,53 @@ class CreativeAgent:
             )
         )
 
-        # Real Gemini evaluation
+        # Genuine Gemini evaluation.
         answer = self.llm.invoke(prompt)
 
-        # Deterministic quality requirement
+        # Quality is a mandatory condition.
         approved = bool(
             answer.approved and quality_ok
         )
 
+        # Explain the actual comparison.
+        comparison = (
+            f"Solution quality: {quality:g}/100. "
+            f"Minimum required: {minimum_quality:g}/100. "
+        )
+
         if not quality_ok:
             reason = (
-                "Below minimum event quality requirement: "
-                f"{quality_score:g} < {required_quality:g}."
+                comparison
+                + "The solution is below the minimum "
+                "quality requirement. Rejected."
             )
-        else:
-            reason = answer.reason.strip()
 
-            if not reason:
-                reason = (
-                    "Creative evaluation completed "
-                    "without a detailed explanation."
+        else:
+            llm_reason = (answer.reason or "").strip()
+
+            if not llm_reason:
+                llm_reason = (
+                    "No detailed creative justification "
+                    "was provided."
                 )
+
+            quality_status = (
+                "The quality requirement is met. "
+            )
+
+            decision_status = (
+                "Creative assessment approved."
+                if approved
+                else "Creative assessment rejected."
+            )
+
+            reason = (
+                comparison
+                + quality_status
+                + llm_reason
+                + " "
+                + decision_status
+            )
 
         return AgentEvaluation(
             agent=self.name,
@@ -221,4 +221,5 @@ class CreativeAgent:
             reason=reason,
             blocking=False
         )
+
 
