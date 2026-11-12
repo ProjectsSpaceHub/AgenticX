@@ -1,81 +1,141 @@
 
-"""Adaptive multi-agent negotiation for Studio 67."""
+"""Studio 67 adaptive negotiation coordinator.
+
+Coordinates four actual agent instances via a validated ACL MessageBus.
+This module does not fabricate agent opinions or call an LLM itself.
+"""
 
 import math
 import time
+
 from core.communication import MessageBus
-from core.models import RunResult, AgentEvaluation
+from core.models import AgentEvaluation, RunResult
 
 
 class NegotiationEngine:
+    VERSION = "2026-11-negotiation-v2"
+
+    REQUIRED_AGENTS = frozenset({
+        "Creative", "Finance", "Safety", "Operations"
+    })
 
     def __init__(
         self, creative, finance, safety,
         operations, max_rounds=3
     ):
+        if type(max_rounds) is not int or max_rounds < 1:
+            raise ValueError(
+                "max_rounds must be a positive integer"
+            )
+
         self.agents = [
             creative, finance, safety, operations
         ]
 
-        if not isinstance(max_rounds, int) or max_rounds < 1:
-            raise ValueError("max_rounds must be positive")
+        names = [
+            getattr(agent, "name", None)
+            for agent in self.agents
+        ]
+
+        if (
+            set(names) != self.REQUIRED_AGENTS
+            or len(set(names)) != 4
+        ):
+            raise ValueError(
+                "Exactly one agent of each required role is needed"
+            )
+
+        if any(
+            not callable(getattr(a, "evaluate", None))
+            for a in self.agents
+        ):
+            raise TypeError(
+                "Every agent must implement evaluate(case, option)"
+            )
 
         self.max_rounds = max_rounds
 
     @staticmethod
     def _number(value, default=0.0):
-        try:
-            number = float(value)
-            return number if math.isfinite(number) else default
-        except (TypeError, ValueError):
+        if value is None or isinstance(value, bool):
             return default
 
+        try:
+            value = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return default
+
+        return value if math.isfinite(value) else default
+
     @staticmethod
-    def _is_true(value):
+    def _true(value):
+        if value is True:
+            return True
+
+        if isinstance(value, bool) or value is None:
+            return False
+
+        if isinstance(value, (int, float)):
+            return math.isfinite(value) and value == 1
+
         return (
-            value is True
-            or value == 1
-            or (
-                isinstance(value, str)
-                and value.strip().lower() == "true"
-            )
+            isinstance(value, str)
+            and value.strip().lower() in {
+                "true", "yes", "1"
+            }
         )
 
     def _priority(self, option, objections):
-        """Rank options using previous agent objections."""
+        """Prioritize alternatives using previous objections."""
 
-        cost = self._number(option.get("cost_sar"))
-        duration = self._number(option.get("duration_min"))
-        quality = self._number(option.get("quality_score"))
+        cost = self._number(
+            option.get("cost_sar")
+        )
+
+        duration = self._number(
+            option.get("duration_min"),
+            float("inf")
+        )
+
+        quality = self._number(
+            option.get("quality_score")
+        )
+
         savings = self._number(
             option.get("gross_savings_sar")
         )
 
-        safety_ready = all([
-            self._is_true(option.get("safety_ok")),
-            self._is_true(option.get("permit_ok")),
-            self._is_true(
-                option.get("mitigation_verified")
-            )
-        ])
-
         risk = self._number(
             option.get("risk_score_after_mitigation"),
-            default=999
+            999.0
         )
+
+        safety_ready = (
+            all(
+                self._true(option.get(k))
+                for k in (
+                    "safety_ok",
+                    "permit_ok",
+                    "mitigation_verified"
+                )
+            )
+            and 0 <= risk <= 3
+        )
+
+        financial = savings - cost
 
         if "Safety" in objections:
             return (
                 int(safety_ready),
                 -risk,
-                savings - cost,
+                financial,
                 quality,
                 -duration
             )
 
         if "Finance" in objections:
             return (
-                savings - cost,
+                financial,
                 quality,
                 -duration,
                 int(safety_ready),
@@ -86,7 +146,7 @@ class NegotiationEngine:
             return (
                 -duration,
                 quality,
-                savings - cost,
+                financial,
                 int(safety_ready),
                 -risk
             )
@@ -94,21 +154,51 @@ class NegotiationEngine:
         return (
             quality,
             -duration,
-            savings - cost,
+            financial,
             int(safety_ready),
             -risk
+        )
+
+    @staticmethod
+    def _deadline_check(
+        duration, initial_minutes, elapsed_seconds
+    ):
+        """Check remaining execution time after negotiation."""
+
+        try:
+            values = [
+                float(duration),
+                float(initial_minutes),
+                float(elapsed_seconds)
+            ]
+        except (TypeError, ValueError, OverflowError):
+            return False, 0.0, float("inf")
+
+        if not all(
+            math.isfinite(v) and v >= 0
+            for v in values
+        ):
+            return False, 0.0, values[0]
+
+        duration, initial, elapsed = values
+
+        remaining = max(
+            0.0,
+            initial - elapsed / 60.0
+        )
+
+        return (
+            duration <= remaining,
+            remaining,
+            duration
         )
 
     def _evaluate_proposal(
         self, case, option, round_number, bus
     ):
-        """Collect real evaluations from all four agents."""
-
         evaluations = []
 
         for agent in self.agents:
-
-            # Coordinator requests an evaluation
             request = bus.send(
                 round_number,
                 "Coordinator",
@@ -117,110 +207,114 @@ class NegotiationEngine:
                 f"Evaluate option {option['option_id']}"
             )
 
-            # Real agent evaluation
-            evaluation = agent.evaluate(case, option)
+            result = agent.evaluate(case, option)
 
-            # Verify the returned evaluation
-            if not isinstance(evaluation, AgentEvaluation):
+            if not isinstance(result, AgentEvaluation):
                 raise TypeError(
                     f"{agent.name} returned an invalid evaluation"
                 )
 
-            if evaluation.agent != agent.name:
-                raise ValueError("Agent name mismatch")
+            if (
+                result.agent != agent.name
+                or result.option_id != option["option_id"]
+            ):
+                raise ValueError(
+                    f"{agent.name} returned a mismatched evaluation"
+                )
 
-            if evaluation.option_id != option["option_id"]:
-                raise ValueError("Option ID mismatch")
+            evaluations.append(result)
 
-            evaluations.append(evaluation)
-
-            # Share evaluation reasoning
             bus.send(
                 round_number,
                 agent.name,
                 "Coordinator",
                 "INFORM",
-                evaluation.reason,
+                result.reason or "No explanation",
                 in_reply_to=request.message_id
-            )
-
-            # Record approval or refusal
-            performative = (
-                "ACCEPT" if evaluation.approved else "REFUSE"
             )
 
             bus.send(
                 round_number,
                 agent.name,
                 "ALL",
-                performative,
-                f"{option['option_id']}: {evaluation.reason}"
+                "ACCEPT" if result.approved else "REFUSE",
+                f"{option['option_id']}: {result.reason}"
             )
 
         return evaluations
 
-
-    @staticmethod
-    def _deadline_check(duration, initial_minutes, elapsed_seconds):
-        """Check execution feasibility after negotiation time."""
-
-        try:
-            duration = float(duration)
-            initial_minutes = float(initial_minutes)
-            elapsed_seconds = float(elapsed_seconds)
-        except (TypeError, ValueError, OverflowError):
-            return False, 0.0, float("inf")
-
-        values = [duration, initial_minutes, elapsed_seconds]
-
-        if not all(math.isfinite(v) and v >= 0 for v in values):
-            return False, 0.0, duration
-
-        remaining = max(
-            0.0,
-            initial_minutes - elapsed_seconds / 60.0
-        )
-
-        return duration <= remaining, remaining, duration
-
     def run(self, case, options):
-        """Run adaptive negotiation across multiple rounds."""
+        """Negotiate distinct proposals, then escalate if needed."""
 
-        bus = MessageBus(case["case_id"])
-        started_at = time.perf_counter()
-        initial_minutes = self._number(
-            case.get("time_left_min")
-        )
+        if (
+            not isinstance(case, dict)
+            or not str(case.get("case_id", "")).strip()
+        ):
+            raise ValueError(
+                "Case must include a valid case_id"
+            )
+
+        if not isinstance(options, (list, tuple)):
+            raise TypeError(
+                "Options must be a list or tuple"
+            )
+
         remaining = list(options)
+        option_ids = []
+
+        for option in remaining:
+            if (
+                not isinstance(option, dict)
+                or not str(option.get("option_id", "")).strip()
+            ):
+                raise ValueError(
+                    "Each option needs an option_id"
+                )
+
+            if "duration_min" not in option:
+                raise ValueError(
+                    "Each option needs duration_min"
+                )
+
+            option_ids.append(option["option_id"])
+
+        if len(option_ids) != len(set(option_ids)):
+            raise ValueError("Duplicate option IDs")
+
+        bus = MessageBus(str(case["case_id"]))
+
+        initial_time = self._number(
+            case.get("time_left_min"),
+            -1.0
+        )
+
+        started = time.perf_counter()
+
         all_evaluations = []
         objections = set()
         rounds_used = 0
 
-        # Prevent duplicate proposals
-        option_ids = [o["option_id"] for o in remaining]
-        if len(option_ids) != len(set(option_ids)):
-            raise ValueError("Duplicate option IDs")
-
-        for round_number in range(1, self.max_rounds + 1):
-
+        for round_number in range(
+            1, self.max_rounds + 1
+        ):
             if not remaining:
                 break
 
             rounds_used = round_number
 
-            # Announce a new negotiation round
             bus.send(
                 round_number,
                 "Coordinator",
                 "ALL",
                 "CFP",
-                f"Request proposals for round {round_number}"
+                f"Call for proposals, round {round_number}"
             )
 
-            # Select an alternative based on previous objections
             proposal = max(
                 remaining,
-                key=lambda o: self._priority(o, objections)
+                key=lambda o: self._priority(
+                    o, objections
+                )
             )
 
             remaining.remove(proposal)
@@ -233,21 +327,23 @@ class NegotiationEngine:
                 f"Proposed option: {proposal['option_id']}"
             )
 
-            # Collect real decisions from all four agents
-            current_case = dict(case)
-
             elapsed_minutes = (
-                time.perf_counter() - started_at
+                time.perf_counter() - started
             ) / 60.0
+
+            current_case = dict(case)
 
             current_case["time_left_min"] = max(
                 0.0,
-                initial_minutes - elapsed_minutes
+                initial_time - elapsed_minutes
             )
 
             try:
                 evaluations = self._evaluate_proposal(
-                    current_case, proposal, round_number, bus
+                    current_case,
+                    proposal,
+                    round_number,
+                    bus
                 )
 
             except Exception as exc:
@@ -270,29 +366,27 @@ class NegotiationEngine:
                 )
 
                 return RunResult(
-                    case_id=case["case_id"],
+                    case_id=str(case["case_id"]),
                     status="FAILED",
                     selected_option_id=None,
                     rounds=round_number,
                     evaluations=all_evaluations,
                     messages=bus.messages,
-                    reason=f"Agent evaluation error: {error_type}"
+                    reason=(
+                        f"Agent evaluation error: {error_type}"
+                    )
                 )
 
             all_evaluations.extend(evaluations)
 
-            rejected = [
-                e for e in evaluations
-                if not e.approved
-            ]
-
-            # Recheck the deadline after agent evaluations
-            deadline_ok, remaining_minutes, duration = (
-                self._deadline_check(
-                    proposal.get("duration_min"),
-                    initial_minutes,
-                    time.perf_counter() - started_at
-                )
+            (
+                deadline_ok,
+                remaining_minutes,
+                duration
+            ) = self._deadline_check(
+                proposal["duration_min"],
+                initial_time,
+                time.perf_counter() - started
             )
 
             if not deadline_ok:
@@ -301,37 +395,48 @@ class NegotiationEngine:
                     "Coordinator",
                     "ALL",
                     "REFUSE",
-                    f"Deadline constraint failed for "
-                    f"{proposal['option_id']}: "
-                    f"{duration:.2f} minutes required, "
-                    f"{remaining_minutes:.2f} available."
+                    (
+                        f"Deadline failed for "
+                        f"{proposal['option_id']}: "
+                        f"{duration:.2f} min required, "
+                        f"{remaining_minutes:.2f} min remaining"
+                    )
                 )
 
-            # Agreement requires approval and deadline compliance
-            if not rejected and deadline_ok:
+            rejected = [
+                e for e in evaluations
+                if not e.approved
+            ]
 
+            if (
+                not rejected
+                and len(evaluations) == 4
+                and deadline_ok
+            ):
                 bus.send(
                     round_number,
                     "Coordinator",
                     "ALL",
                     "ACCEPT",
-                    f"Agreement reached: {proposal['option_id']}"
+                    f"Agreement: {proposal['option_id']}"
                 )
 
                 return RunResult(
-                    case_id=case["case_id"],
+                    case_id=str(case["case_id"]),
                     status="AGREED",
                     selected_option_id=proposal["option_id"],
                     rounds=round_number,
                     evaluations=all_evaluations,
                     messages=bus.messages,
-                    reason="All four agents approved the solution"
+                    reason=(
+                        "All four agents approved; "
+                        "execution deadline passed"
+                    )
                 )
 
-            # Learn which agents objected
             objections = {
-                evaluation.agent
-                for evaluation in rejected
+                e.agent
+                for e in rejected
             }
 
             if not deadline_ok:
@@ -342,26 +447,28 @@ class NegotiationEngine:
                 "Coordinator",
                 "ALL",
                 "INFORM",
-                "Proposal rejected by: "
+                "Proposal objections: "
                 + ", ".join(sorted(objections))
             )
 
-        # No acceptable proposal was found
         bus.send(
             max(1, rounds_used),
             "Coordinator",
             "Human Manager",
             "REQUEST",
-            "Human escalation: no solution received "
-            "approval from all four agents."
+            "Human escalation: no unanimous feasible solution"
         )
 
         return RunResult(
-            case_id=case["case_id"],
+            case_id=str(case["case_id"]),
             status="ESCALATED",
             selected_option_id=None,
             rounds=rounds_used,
             evaluations=all_evaluations,
             messages=bus.messages,
-            reason="No acceptable solution within the negotiation limit"
+            reason=(
+                "No unanimous feasible proposal "
+                "within the negotiation limit"
+            )
         )
+
