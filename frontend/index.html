@@ -1,0 +1,346 @@
+
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Agentic X — Event Control Center</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;color:#fff;font-family:Arial,sans-serif;background:#1c1639}
+.scene{
+ min-height:100vh;position:relative;overflow:hidden;
+ background:#2b2050 url("assets/stage.png") center top/cover fixed no-repeat
+}
+main{position:relative;max-width:1600px;margin:auto;padding:20px 4vw 35px}
+.brand{text-align:center}
+.brand h1{font-size:clamp(38px,4.3vw,66px);margin:0;font-weight:800}
+.brand p{margin:3px 0;font-size:clamp(14px,1.3vw,20px)}
+.wordmark{display:flex;justify-content:center;align-items:center;gap:2px;letter-spacing:-.045em}
+.mark-x{width:1.16em;height:1.16em;filter:drop-shadow(0 2px 7px #aa82ff55)}
+.agents{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));max-width:1100px;margin:22px auto 0;gap:18px}
+.agent{--accent:#c995ff;text-align:center;min-width:0}
+.agent:nth-child(2){--accent:#ffc58a}
+.agent:nth-child(3){--accent:#8cc9ff}
+.agent:nth-child(4){--accent:#96e7a3}
+.agent button{cursor:pointer;border:0;background:transparent;width:100%;padding:10px 0 0;color:#fff}
+.agent button:focus-visible{outline:2px solid #fff;border-radius:14px}
+.bubble{
+ min-height:75px;height:85px;max-height:105px;
+ border:2px solid var(--accent);border-radius:23px;
+ background:#292044e8;
+ display:flex;align-items:center;justify-content:center;
+ padding:10px 12px;
+ font-size:clamp(11px,1vw,15px);line-height:1.3;
+ overflow:hidden;overflow-wrap:anywhere;text-align:center;
+ box-shadow:0 0 16px #c995ff35
+}
+.robot{
+ height:clamp(175px,17vw,245px);
+ width:auto;max-width:100%;aspect-ratio:3/4;margin:0 auto;
+ background-image:url("assets/robots.png");
+ background-size:400% 100%;background-repeat:no-repeat;
+ background-position:var(--x) center;
+ transition:filter .3s,transform .3s;
+ filter:drop-shadow(0 8px 15px #1b113c)
+}
+.agent:nth-child(1) .robot{--x:0%}
+.agent:nth-child(2) .robot{--x:33.333%}
+.agent:nth-child(3) .robot{--x:66.667%}
+.agent:nth-child(4) .robot{--x:100%}
+.agent button:hover .robot,.agent.selected .robot{
+ filter:drop-shadow(0 0 15px var(--accent));
+ transform:translateY(-6px)
+}
+.agent .name{
+ display:inline-block;border:1px solid var(--accent);
+ border-radius:30px;background:#231d3de8;
+ padding:8px 17px;font-size:clamp(11px,1vw,15px);
+ font-weight:700;white-space:nowrap
+}
+.agent .state{
+ display:inline-block;margin-top:6px;padding:4px 10px;
+ border-radius:20px;background:#272044dc;
+ font-size:12px;font-weight:700
+}
+.agent.accepted .bubble{
+ background:#136948e8;border-color:#70e6a5;
+ box-shadow:0 0 24px #37e27742
+}
+.agent.rejected .bubble{
+ background:#802445e8;border-color:#ff8eae;
+ box-shadow:0 0 24px #f2517a40
+}
+.agent.accepted .state{background:#176846}
+.agent.rejected .state{background:#862b50}
+.agent.selected .bubble{box-shadow:0 0 24px var(--accent)}
+.controls{
+ display:grid;
+ grid-template-columns:minmax(175px,1.4fr) minmax(155px,1fr)
+ minmax(120px,.8fr) minmax(120px,.8fr)
+ minmax(145px,1fr) auto auto;
+ align-items:end;gap:10px;
+ max-width:1230px;width:100%;margin:20px auto 12px
+}
+.control{min-width:0;font-size:13px;font-weight:600}
+.control input,.control select{
+ display:block;color:#fff;background:#382c59;
+ border:1px solid #8f71af;border-radius:7px;
+ width:100%;min-width:0;height:42px;
+ padding:8px;margin-top:6px;font-size:14px
+}
+.btn{
+ height:42px;border:1px solid #bba0e5;
+ background:#6b4c99;color:#fff;border-radius:9px;
+ padding:8px 15px;font-size:14px;font-weight:700;
+ cursor:pointer;white-space:nowrap
+}
+.btn:hover{background:#9170be}
+.btn:disabled{opacity:.45;cursor:default}
+#catalogNotice{
+ max-width:1230px;margin:0 auto 8px;color:#ffe5ae;
+ font-size:13px;text-align:center;display:none
+}
+.scenario-more{
+ max-width:1070px;margin:4px auto 10px;
+ background:#1f1842ae;border:1px solid #e3d2ff3b;
+ border-radius:14px;backdrop-filter:blur(6px)
+}
+.scenario-more summary{
+ cursor:pointer;list-style:none;padding:10px 16px;
+ display:flex;align-items:center;justify-content:space-between;
+ gap:12px;font-size:13px;font-weight:700
+}
+.scenario-more summary::-webkit-details-marker{display:none}
+.scenario-more summary:after{content:"⌄";font-size:17px;color:#dcc8ff}
+.scenario-more .micro{color:#c2afd9;font-size:11px;font-weight:400}
+.scenario-more-body{
+ border-top:1px solid #dccbff33;
+ padding:11px 16px 14px
+}
+.original-fields{margin:0 0 9px;font-size:12px;line-height:1.6}
+.scenario-options{
+ display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px
+}
+.scenario-option{
+ background:#9983cb21;border:1px solid #e2d5ff21;
+ border-radius:10px;padding:9px 10px;min-width:0
+}
+.scenario-option strong{display:block;font-size:12px;margin-bottom:4px}
+.scenario-option span{
+ display:block;color:#d7ccea;font-size:11px;line-height:1.5
+}
+.scenario-option .option-facts{color:#e4ceff;margin-top:4px}
+.scenario-option .option-backup{
+ margin-top:5px;color:#d6f9e0;font-weight:700
+}
+.original-actions{
+ display:flex;align-items:center;gap:12px;
+ margin-top:10px;flex-wrap:wrap
+}
+.original-actions .btn{font-size:11px;padding:6px 10px}
+.panel{
+ border:1px solid #be9eec;border-radius:26px;
+ background:linear-gradient(120deg,#30274deb,#282143ed);
+ box-shadow:0 0 22px #d3a2ff55;
+ padding:16px 22px 18px;max-width:1500px;margin:12px auto
+}
+.head{font-size:21px;font-weight:700;margin-bottom:12px}
+.cards{display:grid;grid-template-columns:minmax(0,1fr);gap:14px}
+.card{
+ border-radius:18px;background:#9a7fba45;
+ border:1px solid #bca0d66b;
+ padding:14px 20px;min-width:0
+}
+.tag{
+ display:inline-block;border-radius:20px;background:#8f69bc9c;
+ padding:4px 10px;font-weight:700;font-size:12px
+}
+.card h2{font-size:19px;margin:9px 0 4px}
+.card p{font-size:13px;line-height:1.45;margin:0}
+.facts{
+ display:flex;flex-flow:row wrap;gap:10px 24px;
+ border-top:1px solid #c6b2db66;
+ margin-top:12px;padding-top:11px;font-size:13px
+}
+.decision{color:#b7f5c2}
+.loghead{
+ border-top:1px solid #ffffff77;
+ margin-top:18px;padding-top:12px;font-size:18px;font-weight:700
+}
+.log{max-height:180px;overflow-y:auto}
+.row{
+ display:grid;grid-template-columns:40px 100px 180px minmax(0,1fr);
+ gap:10px;padding:6px 0;font-size:13px;align-items:start
+}
+.row strong{color:var(--c)}
+.row .msg{overflow-wrap:anywhere}
+.empty{padding:12px 0;font-size:13px;color:#cbbfdf}
+.hint{text-align:center;font-size:11px;color:#e0d0ed;margin:8px 0 0}
+@media(max-width:1050px){
+ .controls{grid-template-columns:repeat(3,minmax(0,1fr))}
+ .controls .btn{width:100%}
+}
+@media(max-width:750px){
+ main{padding:16px 15px}
+ .agents{gap:5px}
+ .bubble{font-size:10px;height:75px;padding:6px}
+ .robot{height:24vw}
+ .agent .name{white-space:normal;font-size:10px;padding:6px}
+ .agent .state{font-size:10px}
+ .scenario-options{grid-template-columns:1fr}
+ .panel{padding:15px}
+ .facts{font-size:12px}
+ .row{grid-template-columns:25px 65px minmax(0,1fr)}
+ .row .msg{grid-column:2/4}
+}
+@media(max-width:570px){
+ .controls{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .controls .control:first-child{grid-column:1/-1}
+}
+</style>
+</head>
+<body>
+<div class="scene">
+<main>
+<header class="brand">
+ <h1 class="wordmark">
+  <span>Agentic</span>
+  <svg class="mark-x" viewBox="0 0 78 78"
+       role="img" aria-label="X">
+   <defs>
+    <linearGradient id="xViolet" x1="0" y1="0" x2="1" y2="1">
+     <stop stop-color="#a977ff"/>
+     <stop offset="1" stop-color="#7b46e2"/>
+    </linearGradient>
+    <linearGradient id="xBlue" x1="0" y1="1" x2="1" y2="0">
+     <stop stop-color="#a957ef"/>
+     <stop offset=".53" stop-color="#a09aff"/>
+     <stop offset="1" stop-color="#b4f1ff"/>
+    </linearGradient>
+   </defs>
+   <path d="M7 7 C16 7 24 9 30 14 L68 69 L52 69
+            C47 69 43 66 40 62 Z" fill="url(#xViolet)"/>
+   <path d="M5 75 L30 42 L51 16 L74 1 L64 25
+            L47 47 L30 67 Z" fill="url(#xBlue)"/>
+  </svg>
+ </h1>
+ <p>Multi-Agent Event Management System</p>
+</header>
+
+<section class="agents" id="agents"
+ aria-label="Click an agent to review its real decision and reasoning by round">
+</section>
+
+<section class="controls" aria-label="Simulation controls">
+ <label class="control">
+  Scenario
+  <select id="scenarioType" aria-label="Scenario type">
+   <option value="Screen Failure">Screen Failure</option>
+   <option value="Budget Overrun">Budget Overrun</option>
+   <option value="Safety Conflict">Safety Conflict</option>
+  </select>
+ </label>
+ <label class="control">
+  Test Case
+  <select id="scenario" aria-label="Test case">
+   <option value="">Loading cases…</option>
+  </select>
+ </label>
+ <label class="control">
+  Budget (SAR)
+  <input id="budget" type="number" min="0" step="1000" value="0">
+ </label>
+ <label class="control">
+  Time (minutes)
+  <input id="time" type="number" min="0" step="10" value="0">
+ </label>
+ <label class="control">
+  Backup Equipment
+  <select id="equipment">
+   <option value="available">Available</option>
+   <option value="unavailable">Unavailable</option>
+  </select>
+ </label>
+ <button class="btn" id="run">▶ Run</button>
+ <button class="btn" id="reset">↺ Reset</button>
+</section>
+
+<div id="catalogNotice" role="status" aria-live="polite"></div>
+
+<section class="scenario-more">
+ <details id="caseDetails">
+  <summary>
+   <span>▤ &nbsp;Scenario Details &amp; Solutions</span>
+   <span class="micro">Original values from dataset · tap to expand</span>
+  </summary>
+  <div class="scenario-more-body">
+   <p id="scenarioOriginal" class="original-fields">
+    Loading real scenario data…
+   </p>
+   <div class="scenario-options" id="scenarioOptions"></div>
+   <div class="original-actions">
+    <button type="button" class="btn reset-original"
+            id="resetOriginal">
+     ↺ Original Values
+    </button>
+    <span id="changeIndicator" class="micro">
+     Original values
+    </span>
+   </div>
+  </div>
+ </details>
+</section>
+
+<section class="panel">
+ <div class="head">☷ &nbsp;Event Control Center</div>
+ <div class="cards">
+  <div class="card">
+   <div>
+    <span class="tag">⚠ Current Scenario</span>
+    <h2 id="scenarioTitle">Screen Failure</h2>
+    <p id="scenarioDescription">
+     The main screen stopped working before the event starts.
+    </p>
+   </div>
+   <div class="facts">
+    <span>◷ Time Left: <span id="timeOut">120 minutes</span></span>
+    <span>▤ Budget: <span id="budgetOut">25,000 SAR</span></span>
+    <span>◉ Backup Equipment: <span id="equipmentOut">Available</span></span>
+    <span>△ Impact: High</span>
+   </div>
+  </div>
+
+  <div class="card">
+   <div>
+    <span class="tag">✓ Final Decision</span>
+    <h2 id="status">Awaiting Simulation</h2>
+    <p id="explanation">
+     Run a real scenario; click each robot to inspect its decisions by round.
+    </p>
+   </div>
+   <div class="facts">
+    <span>▣ <span id="solution">—</span></span>
+    <span>▤ Cost: <span id="cost">—</span></span>
+    <span>◷ Setup Time: <span id="duration">—</span></span>
+    <span>⬡ Safety: <span id="safety">—</span></span>
+   </div>
+  </div>
+ </div>
+
+ <div class="loghead">▤ &nbsp;Negotiation Log</div>
+ <div class="log" id="log">
+  <div class="empty">
+   Messages appear here during the demonstration.
+  </div>
+ </div>
+ <p class="hint">
+  Live Python evaluations. Negotiation messages are replayed
+  from real recorded execution.
+ </p>
+</section>
+</main>
+</div>
+<script src="app.js?v=2"></script>
+</body>
+</html>
