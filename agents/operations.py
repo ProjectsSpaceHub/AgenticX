@@ -1,5 +1,5 @@
 
-"""Operations Agent: real Gemini judgment with mandatory resource gates."""
+"""Operations Agent: Gemini evaluation with mandatory resource gates."""
 
 import math
 import os
@@ -51,7 +51,7 @@ def is_true(value):
 
 class OperationsAgent:
     name = "Operations"
-    VERSION = "2026-11-operations-v3"
+    VERSION = "2026-11-operations-gemini-all-v4"
 
     CASE_FIELDS = (
         "case_id",
@@ -88,7 +88,7 @@ class OperationsAgent:
 
         model = os.getenv(
             "AGENTICX_MODEL",
-            "gemini-3.5-flash-lite"
+            "gemini-3.5-flash-lite",
         )
 
         self.llm = ChatGoogleGenerativeAI(
@@ -98,7 +98,7 @@ class OperationsAgent:
             max_retries=1,
         ).with_structured_output(
             OperationsOpinion,
-            method="json_schema"
+            method="json_schema",
         )
 
     @staticmethod
@@ -245,23 +245,6 @@ class OperationsAgent:
 
         option_id = str(option["option_id"])
 
-        if not passed:
-            reason = (
-                self.describe_failures(failed, values)
-                + " Operations rejects this option "
-                "because these required resources "
-                "or conditions are not satisfied."
-            )
-
-            return AgentEvaluation(
-                agent=self.name,
-                option_id=option_id,
-                approved=False,
-                score=0,
-                blocking=True,
-                reason=reason,
-            )
-
         case_input = {
             key: case.get(key)
             for key in self.CASE_FIELDS
@@ -273,56 +256,46 @@ class OperationsAgent:
         }
 
         prompt = (
-            "You are the Operations Agent for Studio 67, "
-            "an event crisis management system.\n\n"
+            "You are the Operations Agent of Studio 67.\n"
+            "You are an LLM decision-maker responsible ONLY "
+            "for operational feasibility.\n\n"
 
-            "All mandatory time, crew, supplier, backup "
-            "equipment, and venue access checks have "
-            "already passed.\n\n"
+            "Analyze every proposal, including proposals with "
+            "failed mandatory resource checks.\n"
 
-            "YOUR TASK:\n"
-            "Evaluate the operational practicality "
-            "of carrying out this proposed solution "
-            "for the specific incident.\n\n"
+            "Assess the incident, implementation feasibility, "
+            "time, crew, equipment, supplier and venue access.\n"
 
-            "Discuss:\n"
-            "1. How the proposed response can be "
-            "implemented in the event setting.\n"
-            "2. Whether the known operational "
-            "resources support its execution.\n"
-            "3. The practical coordination "
-            "required by the proposal, but only "
-            "where supported by the given facts.\n"
-            "4. Why you accept or reject "
-            "this operational plan.\n\n"
+            "The Python checks below are verified constraints. "
+            "You MUST NOT approve a proposal if any mandatory "
+            "check failed. These checks are non-negotiable.\n"
 
-            "IMPORTANT RULES:\n"
-            "- Do not evaluate budget or cost.\n"
-            "- Do not evaluate event creativity "
-            "or audience quality.\n"
-            "- Do not evaluate safety permits "
-            "or safety compliance.\n"
-            "- Do not invent extra people, "
-            "equipment, resources, or suppliers.\n"
-            "- Do not approve merely because "
-            "the numerical resource gates passed.\n"
-            "- Explain practical consequences, "
-            "not only numerical comparisons.\n\n"
+            "If checks passed, independently assess whether "
+            "the proposal is operationally practical. "
+            "You may approve or reject it with justification.\n"
 
-            "REASONING STYLE:\n"
-            "Provide 2 to 3 meaningful English "
-            "sentences, specific to this incident "
-            "and option. Give concrete operational "
-            "reasons, without generic templates "
-            "or unsupported assumptions.\n\n"
+            "If checks failed, reject the proposal and explain "
+            "the specific operational obstacles, their practical "
+            "consequences, and what would need to change. "
+            "Do not claim missing resources are available.\n"
 
-            "Return structured fields:\n"
-            "- approved: boolean\n"
-            "- score: number from 0 to 100\n"
-            "- reason: specific operational justification\n\n"
+            "Never judge budgets, financial cost, creative "
+            "quality, safety compliance or permits.\n"
 
-            f"CASE: {case_input!r}\n\n"
-            f"OPTION: {option_input!r}"
+            "Give a professional, specific 2-3 sentence "
+            "English explanation. Avoid generic responses, "
+            "invented facts and unsupported assumptions.\n"
+
+            "Return approved (boolean), score (0-100), "
+            "and reason (English justification).\n\n"
+
+            f"CASE: {case_input!r}\n"
+            f"OPTION: {option_input!r}\n"
+            f"MANDATORY_CHECKS_PASSED: {passed!r}\n"
+            f"FAILED_CHECKS: {failed!r}\n"
+            f"MEASUREMENTS: {values!r}\n"
+            f"VERIFIED_FAILURE_DETAILS: "
+            f"{self.describe_failures(failed, values)!r}"
         )
 
         answer = self.llm.invoke(prompt)
@@ -336,27 +309,34 @@ class OperationsAgent:
                 answer.model_dump()
             )
 
-        status = (
-            "The Operations Agent approves "
-            "this operational plan."
-            if answer.approved
-            else
-            "The Operations Agent rejects "
-            "this operational plan."
-        )
+        # Gemini evaluates both accepted and rejected options.
+        # Mandatory resource constraints cannot be overridden.
+        approved = bool(passed and answer.approved)
 
-        reason = (
-            f"{answer.reason.strip()} "
-            f"All required operational resource "
-            f"checks passed. {status}"
-        )
+        if not passed:
+            reason = (
+                f"{answer.reason.strip()} "
+                f"Verified blocking constraints: "
+                f"{self.describe_failures(failed, values)} "
+                "Operations rejects this proposal."
+            )
+            score = min(answer.score, 49)
+        else:
+            decision = (
+                "approves" if approved else "rejects"
+            )
+            reason = (
+                f"{answer.reason.strip()} "
+                f"All mandatory operational checks passed. "
+                f"Operations {decision} this proposal."
+            )
+            score = answer.score
 
         return AgentEvaluation(
             agent=self.name,
             option_id=option_id,
-            approved=answer.approved,
-            score=answer.score,
+            approved=approved,
+            score=score,
             reason=reason,
-            blocking=True
+            blocking=True,
         )
-
