@@ -1,5 +1,6 @@
 
- // Agentic X — Interactive Multi-Agent Frontend
+/* Agentic X — Interactive Multi-Agent Frontend */
+
 const $ = id => document.getElementById(id);
 
 const agentNames = [
@@ -30,14 +31,17 @@ let baseCase = null;
 let caseRequestSerial = 0;
 let activeJob = null;
 let polling = null;
+let pollingBusy = false;
 let messages = [];
 let agentsState = {};
 let latestResult = null;
 let selectedAgent = null;
 let agentSpeech = {};
 let replayReady = false;
-let agentClickProgress = {};
 let agentRoundLabel = {};
+let agentClickProgress = {};
+let decisionRevealed = false;
+let revealTimer = null;
 
 function text(id, value) {
   const element = $(id);
@@ -50,8 +54,15 @@ function resetStatuses() {
   );
 
   agentSpeech = {};
-  agentClickProgress = {};
   agentRoundLabel = {};
+  agentClickProgress = {};
+}
+
+function clearRevealTimer() {
+  if (revealTimer !== null) {
+    clearTimeout(revealTimer);
+    revealTimer = null;
+  }
 }
 
 function compactReason(value) {
@@ -59,14 +70,23 @@ function compactReason(value) {
     .replace(/\s+/g, ' ')
     .trim();
 
-  return clean.length > 140
-    ? clean.slice(0, 137).trimEnd() + '…'
+  return clean.length > 135
+    ? clean.slice(0, 132).trimEnd() + '…'
     : clean;
 }
 
 function formatSar(value) {
-  return Number(value || 0)
-    .toLocaleString('en-US') + ' SAR';
+  if (value === null || value === undefined) {
+    return '—';
+  }
+
+  const number = Number(value);
+
+  if (!Number.isFinite(number)) {
+    return '—';
+  }
+
+  return number.toLocaleString('en-US') + ' SAR';
 }
 
 function clearExplanation() {
@@ -100,11 +120,8 @@ function showFullExplanation(name, evaluation, round) {
   panel.replaceChildren();
 
   const heading = document.createElement('strong');
-
   heading.textContent =
-    `${name} Agent — ` +
-    `${evaluation.approved ? 'Accepted' : 'Rejected'} ` +
-    `| Round ${round} | ${evaluation.option_id}`;
+    `${name} Agent — Round ${round} — ${evaluation.option_id}`;
 
   heading.style.display = 'block';
   heading.style.marginBottom = '8px';
@@ -115,7 +132,32 @@ function showFullExplanation(name, evaluation, round) {
 
   paragraph.style.margin = '0';
 
-  panel.append(heading, paragraph);
+  const verdict = document.createElement('div');
+  verdict.id = 'agentExplanationVerdict';
+  verdict.style.cssText = `
+    margin-top: 12px;
+    font-weight: bold;
+  `;
+
+  verdict.textContent = 'Reviewing explanation...';
+
+  panel.append(heading, paragraph, verdict);
+}
+
+function revealExplanationVerdict(evaluation) {
+  const verdict = $('agentExplanationVerdict');
+
+  if (!verdict) return;
+
+  const accepted = Boolean(evaluation.approved);
+
+  verdict.textContent = accepted
+    ? '✓ Decision: Accepted'
+    : '✕ Decision: Rejected';
+
+  verdict.style.color = accepted
+    ? '#82edaa'
+    : '#ff9aaa';
 }
 
 function safeMessageElement(message, index) {
@@ -144,6 +186,7 @@ function safeMessageElement(message, index) {
   content.textContent = message.content;
 
   row.append(number, sender, details, content);
+
   return row;
 }
 
@@ -168,7 +211,12 @@ function renderLog() {
   });
 }
 
-// Agent speech is displayed ONLY after clicking.
+/*
+  Decision reveal:
+  Before clicking: neutral appearance, no result.
+  On clicking: explanation appears first.
+  Shortly after: actual Accepted/Rejected and color appear.
+*/
 function renderAgents() {
   const root = $('agents');
   root.replaceChildren();
@@ -178,30 +226,37 @@ function renderAgents() {
     holder.className = 'agent';
 
     const isSelected = selectedAgent === name;
+    const showDecision =
+      isSelected && decisionRevealed && replayReady;
 
     if (isSelected) {
       holder.classList.add('selected');
     }
 
-    holder.classList.add(
-      (agentsState[name] || 'Idle').toLowerCase()
-    );
+    // Keep every agent neutral until its verdict is revealed.
+    if (showDecision) {
+      holder.classList.add(
+        (agentsState[name] || 'Idle').toLowerCase()
+      );
+    } else {
+      holder.classList.add('idle');
+    }
 
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
 
-    if (isSelected && agentSpeech[name]) {
+    if (isSelected && replayReady && agentSpeech[name]) {
       bubble.textContent = agentSpeech[name];
       bubble.title = agentSpeech[name];
+
     } else if (replayReady) {
       bubble.textContent = 'Click to view explanation';
       bubble.title = '';
-    } else if (agentsState[name] === 'Evaluating') {
+
+    } else if (activeJob) {
       bubble.textContent = 'Evaluating...';
       bubble.title = '';
-    } else if (activeJob) {
-      bubble.textContent = 'Waiting for evaluation...';
-      bubble.title = '';
+
     } else {
       bubble.textContent = 'Ready to evaluate.';
       bubble.title = '';
@@ -225,13 +280,47 @@ function renderAgents() {
     const state = document.createElement('div');
     state.className = 'state';
 
-    state.textContent =
-      '● ' + (agentsState[name] || 'Idle') +
-      (
-        agentRoundLabel[name]
-          ? ' · ' + agentRoundLabel[name]
-          : ''
-      );
+    if (showDecision) {
+      const status = agentsState[name];
+
+      state.textContent =
+        `● ${status}` +
+        (
+          agentRoundLabel[name]
+            ? ` · ${agentRoundLabel[name]}`
+            : ''
+        );
+
+      state.style.color =
+        status === 'Accepted'
+          ? '#d8ffe8'
+          : '#ffe1e6';
+
+      state.style.background =
+        status === 'Accepted'
+          ? '#146845'
+          : '#852b4b';
+
+    } else if (isSelected && replayReady) {
+      state.textContent = '● Explaining...';
+      state.style.background = '#493765';
+      state.style.color = '#ffffff';
+
+    } else if (replayReady) {
+      state.textContent = '● Decision hidden';
+      state.style.background = '#493765';
+      state.style.color = '#ffffff';
+
+    } else if (activeJob) {
+      state.textContent = '● Processing';
+      state.style.background = '#493765';
+      state.style.color = '#ffffff';
+
+    } else {
+      state.textContent = '● Idle';
+      state.style.background = '#493765';
+      state.style.color = '#ffffff';
+    }
 
     button.append(robot, label, state);
 
@@ -293,7 +382,6 @@ function renderCaseOptions(options) {
     card.className = 'scenario-option';
 
     const heading = document.createElement('strong');
-
     heading.textContent =
       `${option.option_id || ''} · ` +
       `${option.option_name || ''}`;
@@ -389,7 +477,8 @@ async function selectCase() {
 
   try {
     const response = await fetch(
-      '/api/case/' + encodeURIComponent(id)
+      '/api/case/' + encodeURIComponent(id),
+      { cache: 'no-store' }
     );
 
     if (!response.ok) {
@@ -401,7 +490,6 @@ async function selectCase() {
     if (serial !== caseRequestSerial) return;
 
     baseCase = data;
-
     const caseData = data.case;
 
     text(
@@ -473,14 +561,16 @@ async function selectType() {
 
 async function initCatalog() {
   try {
-    const response = await fetch('/api/scenarios');
+    const response = await fetch(
+      '/api/scenarios',
+      { cache: 'no-store' }
+    );
 
     if (!response.ok) {
       throw Error('Catalog unavailable');
     }
 
     scenarioGroups = await response.json();
-
     await selectType();
 
   } catch (error) {
@@ -493,7 +583,6 @@ async function initCatalog() {
       'Cannot load cases from Python API.';
 
     $('catalogNotice').style.display = 'block';
-
     $('run').disabled = true;
   }
 }
@@ -529,7 +618,10 @@ function showDecision(result) {
 
   const agreed = result.status === 'AGREED';
 
-  text('status', agreed ? 'AGREED' : result.status);
+  text(
+    'status',
+    agreed ? 'AGREED' : result.status
+  );
 
   $('status').className =
     agreed ? 'decision' : '';
@@ -580,6 +672,9 @@ function stopPolling() {
 }
 
 async function pollJob(jobId) {
+  if (pollingBusy) return;
+  pollingBusy = true;
+
   try {
     const response = await fetch(
       '/api/job/' + encodeURIComponent(jobId),
@@ -604,6 +699,8 @@ async function pollJob(jobId) {
 
       resetStatuses();
       selectedAgent = null;
+      decisionRevealed = false;
+      clearRevealTimer();
       clearExplanation();
 
       agentNames.forEach(name => {
@@ -611,18 +708,21 @@ async function pollJob(jobId) {
 
         if (!evaluations.length) {
           agentsState[name] = 'Idle';
+          agentSpeech[name] = 'No evaluation recorded.';
           return;
         }
 
-        const last = evaluations[evaluations.length - 1];
+        const last =
+          evaluations[evaluations.length - 1];
 
+        // Save actual verdict internally.
+        // Do not show it before a robot is clicked.
         agentsState[name] =
           last.approved ? 'Accepted' : 'Rejected';
 
         agentRoundLabel[name] =
           `R${evaluations.length} · ${last.option_id}`;
 
-        // Store the actual explanation but do not show it yet.
         agentSpeech[name] =
           name === 'Finance'
             ? financeSummary(last)
@@ -633,10 +733,8 @@ async function pollJob(jobId) {
 
       $('run').disabled = false;
 
-      // No agent is selected, so no explanation appears.
       renderAgents();
       renderLog();
-
       return;
     }
 
@@ -652,8 +750,8 @@ async function pollJob(jobId) {
       );
 
       $('run').disabled = false;
+      renderAgents();
       renderLog();
-
       return;
     }
 
@@ -686,6 +784,10 @@ async function pollJob(jobId) {
     text('explanation', error.message);
 
     $('run').disabled = false;
+    renderAgents();
+
+  } finally {
+    pollingBusy = false;
   }
 }
 
@@ -693,9 +795,11 @@ async function run() {
   if (activeJob || !baseCase) return;
 
   stopPolling();
+  clearRevealTimer();
   clearExplanation();
   resetStatuses();
 
+  decisionRevealed = false;
   selectedAgent = null;
   messages = [];
   latestResult = null;
@@ -756,22 +860,30 @@ async function run() {
   }
 }
 
-// Only the clicked agent shows its reasoning.
-// Clicking a different agent hides the previous explanation.
+/*
+  Click behavior:
+  1. Show actual reasoning first.
+  2. Wait briefly.
+  3. Reveal actual Accepted/Rejected and color.
+  4. Opening another agent hides the previous verdict.
+*/
 function handleAgentClick(name) {
   if (activeJob || !replayReady || !latestResult) {
     return;
   }
 
-  // Clicking the selected agent again closes it.
+  clearRevealTimer();
+
   if (selectedAgent === name) {
     selectedAgent = null;
+    decisionRevealed = false;
     clearExplanation();
     renderAgents();
     return;
   }
 
   selectedAgent = name;
+  decisionRevealed = false;
   clearExplanation();
 
   const evaluations = evaluationsFor(name);
@@ -788,6 +900,7 @@ function handleAgentClick(name) {
 
   const evaluation = evaluations[index];
 
+  // Store the real verdict but keep it visually hidden.
   agentsState[name] =
     evaluation.approved ? 'Accepted' : 'Rejected';
 
@@ -799,21 +912,38 @@ function handleAgentClick(name) {
       ? financeSummary(evaluation)
       : compactReason(evaluation.reason);
 
-  showFullExplanation(
-    name,
-    evaluation,
-    index + 1
-  );
+  // Show the full explanation first.
+  showFullExplanation(name, evaluation, index + 1);
 
   agentClickProgress[name] = index + 1;
 
   renderAgents();
+
+  // Reveal verdict and color after the explanation.
+  revealTimer = setTimeout(() => {
+    if (
+      selectedAgent !== name ||
+      activeJob ||
+      !replayReady
+    ) {
+      return;
+    }
+
+    decisionRevealed = true;
+
+    revealExplanationVerdict(evaluation);
+    renderAgents();
+
+    revealTimer = null;
+  }, 1200);
 }
 
 function reset() {
+  clearRevealTimer();
   stopPolling();
   clearExplanation();
 
+  decisionRevealed = false;
   activeJob = null;
   messages = [];
   selectedAgent = null;
@@ -832,10 +962,7 @@ function reset() {
   );
 
   [
-    'solution',
-    'cost',
-    'duration',
-    'safety'
+    'solution', 'cost', 'duration', 'safety'
   ].forEach(id => text(id, '—'));
 
   renderAgents();
@@ -869,3 +996,4 @@ resetStatuses();
 reset();
 controls();
 initCatalog();
+
