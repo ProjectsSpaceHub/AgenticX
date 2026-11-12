@@ -1,5 +1,5 @@
 
-/* Agentic X — Interactive Multi-Agent Frontend */
+/* Agentic X — Persistent Real Evaluations */
 
 const $ = id => document.getElementById(id);
 
@@ -15,16 +15,12 @@ const agentColors = {
 };
 
 const scenarioMeta = {
-  'Screen Failure': {
-    title: 'Screen Failure', impact: 'High'
-  },
-  'Budget Overrun': {
-    title: 'Budget Overrun', impact: 'High'
-  },
-  'Safety Conflict': {
-    title: 'Safety Conflict', impact: 'Critical'
-  }
+  'Screen Failure': 'Screen Failure',
+  'Budget Overrun': 'Budget Overrun',
+  'Safety Conflict': 'Safety Conflict'
 };
+
+const STORAGE_KEY = 'agenticx:latest-real-job:v2';
 
 let scenarioGroups = [];
 let baseCase = null;
@@ -42,10 +38,35 @@ let agentRoundLabel = {};
 let agentClickProgress = {};
 let decisionRevealed = false;
 let revealTimer = null;
+let currentRunInputs = null;
 
 function text(id, value) {
   const element = $(id);
   if (element) element.textContent = String(value);
+}
+
+function formatSar(value) {
+  if (value == null || !Number.isFinite(Number(value))) {
+    return '—';
+  }
+
+  return Number(value).toLocaleString('en-US') + ' SAR';
+}
+
+function compactReason(value) {
+  const clean = String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return clean.length > 132
+    ? clean.slice(0, 129).trimEnd() + '…'
+    : clean;
+}
+
+function actualBoolean(value) {
+  return value === true ||
+    value === 1 ||
+    String(value).trim().toLowerCase() === 'true';
 }
 
 function resetStatuses() {
@@ -61,37 +82,69 @@ function resetStatuses() {
 function clearRevealTimer() {
   if (revealTimer !== null) {
     clearTimeout(revealTimer);
-    revealTimer = null;
-  }
-}
-
-function compactReason(value) {
-  const clean = String(value || '')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  return clean.length > 135
-    ? clean.slice(0, 132).trimEnd() + '…'
-    : clean;
-}
-
-function formatSar(value) {
-  if (value === null || value === undefined) {
-    return '—';
   }
 
-  const number = Number(value);
-
-  if (!Number.isFinite(number)) {
-    return '—';
-  }
-
-  return number.toLocaleString('en-US') + ' SAR';
+  revealTimer = null;
 }
 
 function clearExplanation() {
-  const panel = $('agentExplanationPanel');
-  if (panel) panel.remove();
+  $('agentExplanationPanel')?.remove();
+}
+
+function clearInteraction() {
+  clearRevealTimer();
+  selectedAgent = null;
+  decisionRevealed = false;
+  clearExplanation();
+}
+
+// Save the real evaluation locally in this browser.
+function saveRun(record) {
+  try {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify(record)
+    );
+  } catch (error) {
+    console.warn('Could not save last run:', error);
+  }
+}
+
+function readRun() {
+  try {
+    const record = JSON.parse(
+      localStorage.getItem(STORAGE_KEY) || 'null'
+    );
+
+    if (!record?.inputs?.case_id) {
+      return null;
+    }
+
+    if (
+      record.status === 'COMPLETED' &&
+      Array.isArray(record.result?.evaluations)
+    ) {
+      return record;
+    }
+
+    if (
+      record.status === 'RUNNING' &&
+      typeof record.job_id === 'string'
+    ) {
+      return record;
+    }
+
+  } catch (error) {
+    console.warn('Could not read last run:', error);
+  }
+
+  return null;
+}
+
+function forgetRun() {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch (_) {}
 }
 
 function showFullExplanation(name, evaluation, round) {
@@ -120,28 +173,29 @@ function showFullExplanation(name, evaluation, round) {
   panel.replaceChildren();
 
   const heading = document.createElement('strong');
+
   heading.textContent =
     `${name} Agent — Round ${round} — ${evaluation.option_id}`;
 
-  heading.style.display = 'block';
-  heading.style.marginBottom = '8px';
+  heading.style.cssText =
+    'display:block;margin-bottom:8px';
 
-  const paragraph = document.createElement('p');
-  paragraph.textContent =
+  const reason = document.createElement('p');
+
+  reason.textContent =
     evaluation.reason || 'No explanation provided.';
 
-  paragraph.style.margin = '0';
+  reason.style.margin = '0';
 
   const verdict = document.createElement('div');
   verdict.id = 'agentExplanationVerdict';
-  verdict.style.cssText = `
-    margin-top: 12px;
-    font-weight: bold;
-  `;
+
+  verdict.style.cssText =
+    'margin-top:12px;font-weight:bold';
 
   verdict.textContent = 'Reviewing explanation...';
 
-  panel.append(heading, paragraph, verdict);
+  panel.append(heading, reason, verdict);
 }
 
 function revealExplanationVerdict(evaluation) {
@@ -149,13 +203,11 @@ function revealExplanationVerdict(evaluation) {
 
   if (!verdict) return;
 
-  const accepted = Boolean(evaluation.approved);
-
-  verdict.textContent = accepted
+  verdict.textContent = evaluation.approved
     ? '✓ Decision: Accepted'
     : '✕ Decision: Rejected';
 
-  verdict.style.color = accepted
+  verdict.style.color = evaluation.approved
     ? '#82edaa'
     : '#ff9aaa';
 }
@@ -170,6 +222,7 @@ function safeMessageElement(message, index) {
   );
 
   const number = document.createElement('span');
+
   number.textContent =
     String(index + 1).padStart(2, '0');
 
@@ -177,6 +230,7 @@ function safeMessageElement(message, index) {
   sender.textContent = message.sender;
 
   const details = document.createElement('span');
+
   details.textContent =
     `${message.receiver} · ` +
     `${message.performative} · R${message.round}`;
@@ -200,7 +254,7 @@ function renderLog() {
 
     empty.textContent = activeJob
       ? 'Running real agents...'
-      : 'Run a scenario to see the recorded ACL negotiation.';
+      : 'Run a scenario to see recorded ACL negotiation.';
 
     log.append(empty);
     return;
@@ -211,12 +265,7 @@ function renderLog() {
   });
 }
 
-/*
-  Decision reveal:
-  Before clicking: neutral appearance, no result.
-  On clicking: explanation appears first.
-  Shortly after: actual Accepted/Rejected and color appear.
-*/
+// Agents stay neutral until clicked.
 function renderAgents() {
   const root = $('agents');
   root.replaceChildren();
@@ -226,40 +275,46 @@ function renderAgents() {
     holder.className = 'agent';
 
     const isSelected = selectedAgent === name;
-    const showDecision =
-      isSelected && decisionRevealed && replayReady;
+
+    const reveal =
+      isSelected &&
+      decisionRevealed &&
+      replayReady &&
+      (
+        agentsState[name] === 'Accepted' ||
+        agentsState[name] === 'Rejected'
+      );
 
     if (isSelected) {
       holder.classList.add('selected');
     }
 
-    // Keep every agent neutral until its verdict is revealed.
-    if (showDecision) {
-      holder.classList.add(
-        (agentsState[name] || 'Idle').toLowerCase()
-      );
-    } else {
-      holder.classList.add('idle');
-    }
+    holder.classList.add(
+      reveal
+        ? agentsState[name].toLowerCase()
+        : 'idle'
+    );
 
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
 
-    if (isSelected && replayReady && agentSpeech[name]) {
+    if (
+      isSelected &&
+      replayReady &&
+      agentSpeech[name]
+    ) {
       bubble.textContent = agentSpeech[name];
       bubble.title = agentSpeech[name];
 
     } else if (replayReady) {
-      bubble.textContent = 'Click to view explanation';
-      bubble.title = '';
+      bubble.textContent =
+        'Click to view explanation';
 
     } else if (activeJob) {
       bubble.textContent = 'Evaluating...';
-      bubble.title = '';
 
     } else {
-      bubble.textContent = 'Ready to evaluate.';
-      bubble.title = '';
+      bubble.textContent = 'Run a scenario first';
     }
 
     const button = document.createElement('button');
@@ -280,46 +335,34 @@ function renderAgents() {
     const state = document.createElement('div');
     state.className = 'state';
 
-    if (showDecision) {
-      const status = agentsState[name];
-
+    if (reveal) {
       state.textContent =
-        `● ${status}` +
-        (
-          agentRoundLabel[name]
-            ? ` · ${agentRoundLabel[name]}`
-            : ''
-        );
-
-      state.style.color =
-        status === 'Accepted'
-          ? '#d8ffe8'
-          : '#ffe1e6';
+        `● ${agentsState[name]} · ` +
+        (agentRoundLabel[name] || '');
 
       state.style.background =
-        status === 'Accepted'
+        agentsState[name] === 'Accepted'
           ? '#146845'
           : '#852b4b';
 
+      state.style.color = '#fff';
+
     } else if (isSelected && replayReady) {
       state.textContent = '● Explaining...';
-      state.style.background = '#493765';
-      state.style.color = '#ffffff';
 
     } else if (replayReady) {
       state.textContent = '● Decision hidden';
-      state.style.background = '#493765';
-      state.style.color = '#ffffff';
 
     } else if (activeJob) {
       state.textContent = '● Processing';
-      state.style.background = '#493765';
-      state.style.color = '#ffffff';
 
     } else {
       state.textContent = '● Idle';
+    }
+
+    if (!reveal) {
       state.style.background = '#493765';
-      state.style.color = '#ffffff';
+      state.style.color = '#fff';
     }
 
     button.append(robot, label, state);
@@ -333,10 +376,46 @@ function renderAgents() {
   });
 }
 
+function originalBudget(c) {
+  return Number(
+    c.initial_budget_sar ?? c.budget_sar ?? 0
+  );
+}
+
+function originalTime(c) {
+  return Number(c.time_left_min ?? 0);
+}
+
+function originalEquipment(c) {
+  return actualBoolean(c.backup_available);
+}
+
+function updateChanged() {
+  if (!baseCase) return;
+
+  const c = baseCase.case;
+
+  const altered =
+    Number($('budget').value) !== originalBudget(c) ||
+    Number($('time').value) !== originalTime(c) ||
+    ($('equipment').value === 'available') !==
+      originalEquipment(c);
+
+  text(
+    'changeIndicator',
+    altered
+      ? 'Modified test conditions'
+      : 'Original dataset values'
+  );
+}
+
 function controls() {
   updateChanged();
 
-  text('budgetOut', formatSar($('budget').value));
+  text(
+    'budgetOut',
+    formatSar($('budget').value)
+  );
 
   text(
     'timeOut',
@@ -351,245 +430,77 @@ function controls() {
   );
 }
 
-function originalBudget(caseData) {
-  return Number(
-    caseData.initial_budget_sar ??
-    caseData.budget_sar ??
-    0
-  );
-}
+function resetOriginal() {
+  if (!baseCase || activeJob) return;
 
-function originalTime(caseData) {
-  return Number(caseData.time_left_min ?? 0);
-}
+  const c = baseCase.case;
 
-function originalEquipment(caseData) {
-  const value = caseData.backup_available;
+  $('budget').value = originalBudget(c);
+  $('time').value = originalTime(c);
 
-  return (
-    value === true ||
-    value === 1 ||
-    String(value).toLowerCase() === 'true'
-  );
+  $('equipment').value =
+    originalEquipment(c)
+      ? 'available'
+      : 'unavailable';
+
+  controls();
 }
 
 function renderCaseOptions(options) {
-  const container = $('scenarioOptions');
-  container.replaceChildren();
+  const root = $('scenarioOptions');
+  root.replaceChildren();
 
-  (options || []).forEach(option => {
+  (options || []).forEach(o => {
     const card = document.createElement('div');
     card.className = 'scenario-option';
 
     const heading = document.createElement('strong');
+
     heading.textContent =
-      `${option.option_id || ''} · ` +
-      `${option.option_name || ''}`;
+      `${o.option_id || ''} · ${o.option_name || ''}`;
 
     const facts = document.createElement('span');
     facts.className = 'option-facts';
 
     facts.textContent =
-      `Cost: ${formatSar(option.cost_sar)} · ` +
-      `Duration: ${option.duration_min ?? '—'} min · ` +
-      `Quality: ${option.quality_score ?? '—'}`;
+      `Cost: ${formatSar(o.cost_sar)} · ` +
+      `Duration: ${o.duration_min ?? '—'} min · ` +
+      `Quality: ${o.quality_score ?? '—'}`;
 
     const backup = document.createElement('span');
     backup.className = 'option-backup';
 
-    const needsBackup =
-      option.needs_backup === true ||
-      option.needs_backup === 1 ||
-      String(option.needs_backup).toLowerCase() === 'true';
-
     backup.textContent =
       'Backup Equipment: ' +
-      (needsBackup ? 'Required' : 'Not required');
+      (
+        actualBoolean(o.needs_backup)
+          ? 'Required'
+          : 'Not required'
+      );
 
     card.append(heading, facts, backup);
-    container.append(card);
+    root.append(card);
   });
 }
 
 function showScenario() {
-  const caseData = baseCase?.case;
   const type = $('scenarioType').value;
 
   text(
     'scenarioTitle',
-    scenarioMeta[type]?.title || type
+    scenarioMeta[type] || type
   );
 
   text(
     'scenarioDescription',
-    caseData?.incident || 'Loading scenario data…'
+    baseCase?.case?.incident ||
+    'Loading scenario data…'
   );
-}
-
-function updateChanged() {
-  if (!baseCase) return;
-
-  const caseData = baseCase.case;
-
-  const altered =
-    Number($('budget').value) !== originalBudget(caseData) ||
-    Number($('time').value) !== originalTime(caseData) ||
-    ($('equipment').value === 'available') !==
-      originalEquipment(caseData);
-
-  text(
-    'changeIndicator',
-    altered
-      ? 'Modified test conditions'
-      : 'Original dataset values'
-  );
-}
-
-function resetOriginal() {
-  if (!baseCase || activeJob) return;
-
-  const caseData = baseCase.case;
-
-  $('budget').value = originalBudget(caseData);
-  $('time').value = originalTime(caseData);
-
-  $('equipment').value =
-    originalEquipment(caseData)
-      ? 'available'
-      : 'unavailable';
-
-  controls();
-  updateChanged();
-}
-
-async function selectCase() {
-  if (activeJob) return;
-
-  const serial = ++caseRequestSerial;
-  const id = $('scenario').value;
-
-  baseCase = null;
-
-  text('scenarioOriginal', 'Loading case details…');
-  text('scenarioDescription', 'Loading case data…');
-
-  $('run').disabled = true;
-
-  try {
-    const response = await fetch(
-      '/api/case/' + encodeURIComponent(id),
-      { cache: 'no-store' }
-    );
-
-    if (!response.ok) {
-      throw Error('Could not load case data');
-    }
-
-    const data = await response.json();
-
-    if (serial !== caseRequestSerial) return;
-
-    baseCase = data;
-    const caseData = data.case;
-
-    text(
-      'scenarioOriginal',
-      `Case ${caseData.case_id} · ` +
-      `Budget: ${formatSar(originalBudget(caseData))} · ` +
-      `Time: ${originalTime(caseData)} min · ` +
-      `Equipment: ${
-        originalEquipment(caseData)
-          ? 'Available'
-          : 'Unavailable'
-      } · ` +
-      `Minimum quality: ${
-        caseData.required_quality_min ?? '—'
-      }/100`
-    );
-
-    renderCaseOptions(data.options);
-    resetOriginal();
-    reset();
-    showScenario();
-
-  } catch (error) {
-    if (serial !== caseRequestSerial) return;
-
-    text(
-      'scenarioOriginal',
-      'Could not load case data: ' + error.message
-    );
-
-    text('status', 'DATA ERROR');
-    text('explanation', error.message);
-
-    $('run').disabled = true;
-  }
-}
-
-async function selectType() {
-  const type = $('scenarioType').value;
-
-  const records =
-    scenarioGroups.find(group => group.type === type)
-      ?.cases || [];
-
-  const select = $('scenario');
-  select.replaceChildren();
-
-  records.forEach(record => {
-    const option = document.createElement('option');
-
-    option.value = record.case_id;
-    option.textContent = record.case_id;
-
-    select.append(option);
-  });
-
-  if (records.length) {
-    $('catalogNotice').style.display = 'none';
-    await selectCase();
-
-  } else {
-    $('catalogNotice').textContent =
-      'No cases found for this scenario.';
-
-    $('catalogNotice').style.display = 'block';
-    $('run').disabled = true;
-  }
-}
-
-async function initCatalog() {
-  try {
-    const response = await fetch(
-      '/api/scenarios',
-      { cache: 'no-store' }
-    );
-
-    if (!response.ok) {
-      throw Error('Catalog unavailable');
-    }
-
-    scenarioGroups = await response.json();
-    await selectType();
-
-  } catch (error) {
-    text(
-      'scenarioOriginal',
-      'Case catalog error: ' + error.message
-    );
-
-    $('catalogNotice').textContent =
-      'Cannot load cases from Python API.';
-
-    $('catalogNotice').style.display = 'block';
-    $('run').disabled = true;
-  }
 }
 
 function evaluationsFor(name) {
   return (latestResult?.evaluations || [])
-    .filter(evaluation => evaluation.agent === name);
+    .filter(e => e.agent === name);
 }
 
 function financeSummary(evaluation) {
@@ -618,10 +529,7 @@ function showDecision(result) {
 
   const agreed = result.status === 'AGREED';
 
-  text(
-    'status',
-    agreed ? 'AGREED' : result.status
-  );
+  text('status', result.status);
 
   $('status').className =
     agreed ? 'decision' : '';
@@ -664,15 +572,314 @@ function showDecision(result) {
   showScenario();
 }
 
-function stopPolling() {
-  if (polling) {
-    clearInterval(polling);
-    polling = null;
+// Display a real completed evaluation.
+function displayCompletedRun(result, shouldSave = true) {
+  if (!Array.isArray(result?.evaluations)) {
+    throw Error('Invalid recorded evaluation result');
   }
+
+  messages = result.messages || [];
+  latestResult = result;
+  replayReady = true;
+
+  resetStatuses();
+  clearInteraction();
+
+  agentNames.forEach(name => {
+    const evaluations = evaluationsFor(name);
+
+    if (!evaluations.length) return;
+
+    const last = evaluations[evaluations.length - 1];
+
+    agentsState[name] =
+      last.approved ? 'Accepted' : 'Rejected';
+
+    agentRoundLabel[name] =
+      `R${evaluations.length} · ${last.option_id}`;
+
+    agentSpeech[name] =
+      name === 'Finance'
+        ? financeSummary(last)
+        : compactReason(last.reason);
+  });
+
+  showDecision(result);
+
+  $('run').disabled = false;
+  renderAgents();
+  renderLog();
+
+  if (shouldSave && currentRunInputs) {
+    saveRun({
+      status: 'COMPLETED',
+      inputs: currentRunInputs,
+      result
+    });
+  }
+}
+
+// Restore results after refreshing the page.
+function restoreSavedRunForCase() {
+  const saved = readRun();
+
+  if (
+    !saved ||
+    !baseCase ||
+    saved.inputs.case_id !== baseCase.case.case_id
+  ) {
+    return;
+  }
+
+  currentRunInputs = saved.inputs;
+
+  $('budget').value = saved.inputs.budget_sar;
+  $('time').value = saved.inputs.time_left_min;
+
+  $('equipment').value =
+    saved.inputs.equipment_available
+      ? 'available'
+      : 'unavailable';
+
+  controls();
+
+  if (saved.status === 'COMPLETED') {
+    displayCompletedRun(saved.result, false);
+
+  } else if (saved.status === 'RUNNING') {
+    activeJob = saved.job_id;
+    $('run').disabled = true;
+
+    text('status', 'Resuming previous run');
+
+    text(
+      'explanation',
+      'Checking previous real evaluation without calling Gemini again.'
+    );
+
+    renderAgents();
+
+    pollJob(saved.job_id).then(() => {
+      if (
+        activeJob === saved.job_id &&
+        !polling
+      ) {
+        polling = setInterval(
+          () => pollJob(saved.job_id),
+          1500
+        );
+      }
+    });
+  }
+}
+
+function reset(clearSaved = false) {
+  if (clearSaved) {
+    forgetRun();
+    currentRunInputs = null;
+  }
+
+  stopPolling();
+  clearInteraction();
+
+  activeJob = null;
+  messages = [];
+  latestResult = null;
+  replayReady = false;
+
+  resetStatuses();
+
+  $('run').disabled = !baseCase;
+
+  text('status', 'Awaiting Simulation');
+
+  text(
+    'explanation',
+    'Run a real scenario using the Python backend.'
+  );
+
+  [
+    'solution', 'cost', 'duration', 'safety'
+  ].forEach(id => text(id, '—'));
+
+  renderAgents();
+  renderLog();
+  showScenario();
+}
+
+async function selectCase() {
+  if (activeJob) return;
+
+  const serial = ++caseRequestSerial;
+  const id = $('scenario').value;
+
+  baseCase = null;
+
+  text(
+    'scenarioOriginal',
+    'Loading case details…'
+  );
+
+  text(
+    'scenarioDescription',
+    'Loading case data…'
+  );
+
+  $('run').disabled = true;
+
+  try {
+    const response = await fetch(
+      '/api/case/' + encodeURIComponent(id),
+      { cache: 'no-store' }
+    );
+
+    if (!response.ok) {
+      throw Error('Could not load case data');
+    }
+
+    const data = await response.json();
+
+    if (serial !== caseRequestSerial) return;
+
+    baseCase = data;
+
+    const c = data.case;
+
+    text(
+      'scenarioOriginal',
+      `Case ${c.case_id} · ` +
+      `Budget: ${formatSar(originalBudget(c))} · ` +
+      `Time: ${originalTime(c)} min · ` +
+      `Equipment: ${
+        originalEquipment(c)
+          ? 'Available'
+          : 'Unavailable'
+      } · ` +
+      `Minimum quality: ${
+        c.required_quality_min ?? '—'
+      }/100`
+    );
+
+    renderCaseOptions(data.options);
+
+    reset();
+    resetOriginal();
+    showScenario();
+
+    restoreSavedRunForCase();
+
+  } catch (error) {
+    if (serial !== caseRequestSerial) return;
+
+    text(
+      'scenarioOriginal',
+      'Could not load case data: ' + error.message
+    );
+
+    text('status', 'DATA ERROR');
+    text('explanation', error.message);
+
+    $('run').disabled = true;
+  }
+}
+
+async function selectType() {
+  const type = $('scenarioType').value;
+
+  const records =
+    scenarioGroups.find(g => g.type === type)?.cases || [];
+
+  const select = $('scenario');
+  select.replaceChildren();
+
+  records.forEach(c => {
+    const option = document.createElement('option');
+
+    option.value = c.case_id;
+    option.textContent = c.case_id;
+
+    select.append(option);
+  });
+
+  if (records.length) {
+    $('catalogNotice').style.display = 'none';
+
+    await selectCase();
+
+  } else {
+    $('catalogNotice').textContent =
+      'No cases found for this scenario.';
+
+    $('catalogNotice').style.display = 'block';
+    $('run').disabled = true;
+  }
+}
+
+async function initCatalog() {
+  try {
+    const response = await fetch(
+      '/api/scenarios',
+      { cache: 'no-store' }
+    );
+
+    if (!response.ok) {
+      throw Error('Catalog unavailable');
+    }
+
+    scenarioGroups = await response.json();
+
+    const saved = readRun();
+
+    if (saved) {
+      const match = scenarioGroups.find(g =>
+        (g.cases || []).some(
+          c => c.case_id === saved.inputs.case_id
+        )
+      );
+
+      if (match) {
+        $('scenarioType').value = match.type;
+      }
+    }
+
+    await selectType();
+
+    if (
+      saved &&
+      [...$('scenario').options].some(
+        o => o.value === saved.inputs.case_id
+      ) &&
+      $('scenario').value !== saved.inputs.case_id
+    ) {
+      $('scenario').value = saved.inputs.case_id;
+      await selectCase();
+    }
+
+  } catch (error) {
+    text(
+      'scenarioOriginal',
+      'Case catalog error: ' + error.message
+    );
+
+    $('catalogNotice').textContent =
+      'Cannot load cases from Python API.';
+
+    $('catalogNotice').style.display = 'block';
+    $('run').disabled = true;
+  }
+}
+
+function stopPolling() {
+  if (polling !== null) {
+    clearInterval(polling);
+  }
+
+  polling = null;
 }
 
 async function pollJob(jobId) {
   if (pollingBusy) return;
+
   pollingBusy = true;
 
   try {
@@ -693,54 +900,14 @@ async function pollJob(jobId) {
       stopPolling();
       activeJob = null;
 
-      messages = job.result.messages || [];
-      latestResult = job.result;
-      replayReady = true;
-
-      resetStatuses();
-      selectedAgent = null;
-      decisionRevealed = false;
-      clearRevealTimer();
-      clearExplanation();
-
-      agentNames.forEach(name => {
-        const evaluations = evaluationsFor(name);
-
-        if (!evaluations.length) {
-          agentsState[name] = 'Idle';
-          agentSpeech[name] = 'No evaluation recorded.';
-          return;
-        }
-
-        const last =
-          evaluations[evaluations.length - 1];
-
-        // Save actual verdict internally.
-        // Do not show it before a robot is clicked.
-        agentsState[name] =
-          last.approved ? 'Accepted' : 'Rejected';
-
-        agentRoundLabel[name] =
-          `R${evaluations.length} · ${last.option_id}`;
-
-        agentSpeech[name] =
-          name === 'Finance'
-            ? financeSummary(last)
-            : compactReason(last.reason);
-      });
-
-      showDecision(job.result);
-
-      $('run').disabled = false;
-
-      renderAgents();
-      renderLog();
+      displayCompletedRun(job.result);
       return;
     }
 
     if (job.status === 'ERROR') {
       stopPolling();
       activeJob = null;
+      forgetRun();
 
       text('status', 'EXECUTION ERROR');
 
@@ -750,27 +917,29 @@ async function pollJob(jobId) {
       );
 
       $('run').disabled = false;
+
       renderAgents();
       renderLog();
       return;
     }
 
-    agentNames.forEach(name => {
-      const status = job.agent_status?.[name];
+    if (job.status !== 'RUNNING') {
+      throw Error('Unexpected job status');
+    }
 
-      if (status) {
-        agentsState[name] = status;
+    agentNames.forEach(name => {
+      if (job.agent_status?.[name]) {
+        agentsState[name] =
+          job.agent_status[name];
       }
     });
-
-    const current = job.current_option;
 
     text('status', 'Running real agents');
 
     text(
       'explanation',
-      current
-        ? `Evaluating ${current}. Gemini responses may take time.`
+      job.current_option
+        ? `Evaluating ${job.current_option}. Gemini responses may take time.`
         : 'Starting agent evaluations...'
     );
 
@@ -795,12 +964,9 @@ async function run() {
   if (activeJob || !baseCase) return;
 
   stopPolling();
-  clearRevealTimer();
-  clearExplanation();
+  clearInteraction();
   resetStatuses();
 
-  decisionRevealed = false;
-  selectedAgent = null;
   messages = [];
   latestResult = null;
   replayReady = false;
@@ -811,7 +977,7 @@ async function run() {
 
   text(
     'explanation',
-    'Sending the scenario to the real Python agents...'
+    'Sending scenario to the real Python multi-agent system...'
   );
 
   renderAgents();
@@ -840,14 +1006,22 @@ async function run() {
       throw Error(job.detail || 'Run rejected');
     }
 
+    currentRunInputs = body;
     activeJob = job.job_id;
+
+    saveRun({
+      status: 'RUNNING',
+      job_id: activeJob,
+      inputs: body
+    });
 
     await pollJob(activeJob);
 
-    if (activeJob) {
-      polling = setInterval(() => {
-        if (activeJob) pollJob(activeJob);
-      }, 1500);
+    if (activeJob && !polling) {
+      polling = setInterval(
+        () => pollJob(activeJob),
+        1500
+      );
     }
 
   } catch (error) {
@@ -860,24 +1034,34 @@ async function run() {
   }
 }
 
-/*
-  Click behavior:
-  1. Show actual reasoning first.
-  2. Wait briefly.
-  3. Reveal actual Accepted/Rejected and color.
-  4. Opening another agent hides the previous verdict.
-*/
+// Show explanation first, then the real decision and color.
 function handleAgentClick(name) {
-  if (activeJob || !replayReady || !latestResult) {
+  if (
+    activeJob ||
+    !replayReady ||
+    !latestResult
+  ) {
     return;
   }
 
   clearRevealTimer();
 
   if (selectedAgent === name) {
-    selectedAgent = null;
-    decisionRevealed = false;
-    clearExplanation();
+    clearInteraction();
+    renderAgents();
+    return;
+  }
+
+  const evaluations = evaluationsFor(name);
+
+  if (!evaluations.length) {
+    clearInteraction();
+
+    text(
+      'explanation',
+      `No recorded evaluation for ${name} in this run.`
+    );
+
     renderAgents();
     return;
   }
@@ -886,40 +1070,29 @@ function handleAgentClick(name) {
   decisionRevealed = false;
   clearExplanation();
 
-  const evaluations = evaluationsFor(name);
+  const index = agentClickProgress[name] || 0;
+  const safeIndex = index % evaluations.length;
 
-  if (!evaluations.length) {
-    agentSpeech[name] = 'No evaluation recorded.';
-    renderAgents();
-    return;
-  }
-
-  const index =
-    (agentClickProgress[name] || 0) %
-    evaluations.length;
-
-  const evaluation = evaluations[index];
-
-  // Store the real verdict but keep it visually hidden.
-  agentsState[name] =
-    evaluation.approved ? 'Accepted' : 'Rejected';
-
-  agentRoundLabel[name] =
-    `R${index + 1} · ${evaluation.option_id}`;
+  const evaluation = evaluations[safeIndex];
 
   agentSpeech[name] =
     name === 'Finance'
       ? financeSummary(evaluation)
       : compactReason(evaluation.reason);
 
-  // Show the full explanation first.
-  showFullExplanation(name, evaluation, index + 1);
+  agentRoundLabel[name] =
+    `R${safeIndex + 1} · ${evaluation.option_id}`;
 
   agentClickProgress[name] = index + 1;
 
+  showFullExplanation(
+    name,
+    evaluation,
+    safeIndex + 1
+  );
+
   renderAgents();
 
-  // Reveal verdict and color after the explanation.
   revealTimer = setTimeout(() => {
     if (
       selectedAgent !== name ||
@@ -938,40 +1111,12 @@ function handleAgentClick(name) {
   }, 1200);
 }
 
-function reset() {
-  clearRevealTimer();
-  stopPolling();
-  clearExplanation();
-
-  decisionRevealed = false;
-  activeJob = null;
-  messages = [];
-  selectedAgent = null;
-  latestResult = null;
-  replayReady = false;
-
-  resetStatuses();
-
-  $('run').disabled = !baseCase;
-
-  text('status', 'Awaiting Simulation');
-
-  text(
-    'explanation',
-    'Run a real scenario using the Python backend.'
-  );
-
-  [
-    'solution', 'cost', 'duration', 'safety'
-  ].forEach(id => text(id, '—'));
-
-  renderAgents();
-  renderLog();
-  showScenario();
-}
-
 $('run').addEventListener('click', run);
-$('reset').addEventListener('click', reset);
+
+$('reset').addEventListener(
+  'click',
+  () => reset(true)
+);
 
 ['budget', 'time', 'equipment'].forEach(id => {
   $(id).addEventListener('input', controls);
@@ -996,4 +1141,5 @@ resetStatuses();
 reset();
 controls();
 initCatalog();
+
 
