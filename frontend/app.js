@@ -6,8 +6,8 @@
   Click 1: Agent explanation
   Click 2: Actual Accepted / Rejected verdict
 
-  All four agents must finish the current round
-  before Next Round becomes available.
+  Supports rounds with agent evaluations
+  and rounds ending in coordinator errors.
 
   No mock decisions.
   No Gemini calls when clicking robots.
@@ -219,7 +219,7 @@ function resetReview() {
   1 = Explanation visible
   2 = Verdict visible
 
-  Every agent stays in the same currentRound.
+  A failed round may have zero evaluations.
 */
 
 function recordedRounds() {
@@ -283,6 +283,27 @@ function allAgentsFinishedRound() {
     agentStages[name] === 2 &&
     Boolean(evaluationFor(name))
   );
+}
+
+/*
+  Important fix:
+
+  If the backend recorded a round but the
+  agents failed before producing evaluations,
+  that round is still reviewable.
+
+  Never fabricate evaluations.
+*/
+
+function roundReviewComplete() {
+  const evaluations =
+    evaluationsForRound(currentRound);
+
+  if (evaluations.length === 0) {
+    return true;
+  }
+
+  return allAgentsFinishedRound();
 }
 
 
@@ -382,7 +403,7 @@ function shortSpeech(name, evaluation) {
 
 
 /* =========================================
-   NEXT ROUND BUTTON
+   NEXT ROUND BUTTON — FIXED
 ========================================= */
 
 function showNextRoundControl() {
@@ -422,13 +443,16 @@ function showNextRoundControl() {
 
   strip.append(label);
 
-  const done = allAgentsFinishedRound();
+  const done = roundReviewComplete();
+
+  /*
+    FIX:
+    Check whether another recorded round exists,
+    not whether its agent evaluations exist.
+  */
 
   const hasNext =
-    rounds.includes(currentRound + 1) &&
-    evaluationsForRound(
-      currentRound + 1
-    ).length > 0;
+    rounds.includes(currentRound + 1);
 
   if (hasNext) {
     const button = document.createElement("button");
@@ -457,14 +481,14 @@ function showNextRoundControl() {
       : "Reveal all four agent decisions first";
 
     button.onclick = () => {
-      if (!allAgentsFinishedRound()) {
+      if (!roundReviewComplete()) {
         return;
       }
 
       if (
-        !evaluationsForRound(
+        !recordedRounds().includes(
           currentRound + 1
-        ).length
+        )
       ) {
         return;
       }
@@ -480,8 +504,22 @@ function showNextRoundControl() {
     };
 
     strip.append(button);
+
+  } else if (
+    evaluationsForRound(currentRound).length === 0
+  ) {
+    const notice = document.createElement("span");
+
+    notice.textContent =
+      "No agent evaluations recorded in this round";
+
+    notice.style.color = "#ffd6a5";
+
+    strip.append(notice);
+
   } else if (done) {
-    const doneLabel = document.createElement("span");
+    const doneLabel =
+      document.createElement("span");
 
     doneLabel.textContent =
       "All recorded rounds reviewed";
@@ -583,17 +621,23 @@ function renderAgents() {
         status === "Evaluating"
           ? "Evaluating..."
           : status;
+
     } else if (!resultsReady) {
       bubble.textContent = "Run a scenario first";
+
     } else if (!evaluation) {
-      bubble.textContent = "No recorded evaluation";
+      bubble.textContent =
+        "No recorded evaluation";
+
     } else if (showExplanation) {
       bubble.textContent =
         shortSpeech(name, evaluation);
+
     } else if (showDecision) {
       bubble.textContent = evaluation.approved
         ? "✓ Accepted"
         : "✕ Rejected";
+
     } else {
       bubble.textContent = "Click me";
     }
@@ -620,18 +664,23 @@ function renderAgents() {
     if (activeJob) {
       const status = liveAgentStatus[name] || "Idle";
       state.textContent = `● ${status}`;
+
     } else if (!resultsReady) {
       state.textContent = "● Idle";
+
     } else if (showDecision) {
       state.textContent =
         `● ${evaluation.approved ? "Accepted" : "Rejected"}` +
         ` · R${currentRound}`;
+
     } else if (showExplanation) {
       state.textContent =
         `● Explaining · R${currentRound}`;
+
     } else if (evaluation) {
       state.textContent =
         `● Click me · R${currentRound}`;
+
     } else {
       state.textContent = "● Unavailable";
     }
@@ -702,6 +751,7 @@ function handleAgentClick(name) {
 
   if (agentStages[name] === 0) {
     agentStages[name] = 1;
+
   } else if (agentStages[name] === 1) {
     agentStages[name] = 2;
   }
@@ -736,13 +786,14 @@ function renderLog() {
   }
 
   const rounds = recordedRounds();
+
   const lastRound = rounds.length
     ? Math.max(...rounds)
     : 1;
 
   const fullyReviewed =
     currentRound >= lastRound &&
-    allAgentsFinishedRound();
+    roundReviewComplete();
 
   const visibleMessages = messages.filter(message => {
     const round = Number(message.round);
@@ -1056,12 +1107,9 @@ function updateFinalDecisionDisplay() {
 
   const fullyReviewed =
     currentRound >= lastRound &&
-    allAgentsFinishedRound();
+    roundReviewComplete();
 
-  if (
-    fullyReviewed ||
-    latestResult.status === "FAILED"
-  ) {
+  if (fullyReviewed) {
     showDecision(latestResult);
     return;
   }
@@ -1071,7 +1119,7 @@ function updateFinalDecisionDisplay() {
 
   text(
     "explanation",
-    "Review the four agent decisions in each round " +
+    "Review the agent decisions and recorded rounds " +
     "to reveal the final outcome."
   );
 
@@ -1601,6 +1649,7 @@ function restoreSavedRunForCase() {
       saved.result,
       false
     );
+
   } else if (saved.status === "RUNNING") {
     activeJob = saved.job_id;
     liveAgentStatus = {};
