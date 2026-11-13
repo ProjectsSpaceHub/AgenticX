@@ -48,6 +48,9 @@ let agentStages = {};
 let activeAgent = null;
 let resultsReady = false;
 
+// Real-time status received from the Python backend.
+let liveAgentStatus = {};
+
 
 /* =========================================
    HELPERS
@@ -594,7 +597,11 @@ function renderAgents() {
     `;
 
     if (activeJob) {
-      bubble.textContent = "Evaluating...";
+      const status = liveAgentStatus[name] || "Idle";
+      bubble.textContent =
+        status === "Evaluating"
+          ? "Evaluating..."
+          : status;
     } else if (!resultsReady) {
       bubble.textContent = "Run a scenario first";
     } else if (!evaluation) {
@@ -630,7 +637,8 @@ function renderAgents() {
     state.className = "state";
 
     if (activeJob) {
-      state.textContent = "● Processing";
+      const status = liveAgentStatus[name] || "Idle";
+      state.textContent = `● ${status}`;
     } else if (!resultsReady) {
       state.textContent = "● Idle";
     } else if (showDecision) {
@@ -1042,6 +1050,7 @@ function displayCompletedRun(
 
   activeJob = null;
   resultsReady = true;
+  liveAgentStatus = {};
 
   resetReview();
   showDecision(result);
@@ -1098,6 +1107,9 @@ async function pollJob(jobId) {
       return;
     }
 
+    // Read actual per-agent status from Python.
+    liveAgentStatus = job.agent_status || {};
+
     if (job.status === "COMPLETED") {
       stopPolling();
       displayCompletedRun(job.result);
@@ -1109,6 +1121,7 @@ async function pollJob(jobId) {
 
       activeJob = null;
       forgetRun();
+      liveAgentStatus = {};
 
       text("status", "EXECUTION ERROR");
 
@@ -1141,6 +1154,7 @@ async function pollJob(jobId) {
     stopPolling();
 
     activeJob = null;
+    liveAgentStatus = {};
     $("run").disabled = false;
 
     text("status", "CONNECTION ERROR");
@@ -1207,6 +1221,7 @@ async function run() {
   resultsReady = false;
   latestResult = null;
   messages = [];
+  liveAgentStatus = {};
 
   $("run").disabled = true;
 
@@ -1254,6 +1269,7 @@ async function run() {
     await startPolling(activeJob);
   } catch (error) {
     activeJob = null;
+    liveAgentStatus = {};
 
     $("run").disabled = false;
 
@@ -1281,6 +1297,7 @@ function reset(clearSaved = false) {
   resultsReady = false;
   latestResult = null;
   messages = [];
+  liveAgentStatus = {};
 
   resetReview();
 
@@ -1534,6 +1551,7 @@ function restoreSavedRunForCase() {
     );
   } else if (saved.status === "RUNNING") {
     activeJob = saved.job_id;
+    liveAgentStatus = {};
 
     $("run").disabled = true;
 
@@ -1604,4 +1622,5 @@ $("scenarioType").addEventListener(
 reset(false);
 controls();
 initCatalog();
+
 
