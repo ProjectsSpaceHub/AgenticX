@@ -181,6 +181,15 @@ Additional experiments and evaluation evidence are available in the five Jupyter
 
 ---
 
+## Team Members
+
+| Team Member | GitHub |
+|-------------|--------|
+| Renad Hazazi | [@RENADBHAI](https://github.com/RENADBHAI) |
+| Maram Alhajri | [@vmmci](https://github.com/vmmci) |
+| Rahaf Saadeddin | [@soyrahaf](https://github.com/soyrahaf) |
+| Ghala Hazazi | [@Ghalaxxx](https://github.com/Ghalaxxx) |
+
 **AGENTIC X — Studio 67**
 
 *CAI461 | Agent-Based Systems*
