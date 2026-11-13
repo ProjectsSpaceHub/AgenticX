@@ -78,9 +78,9 @@ main{position:relative;max-width:1600px;margin:auto;padding:20px 4vw 35px}
  display:grid;
  grid-template-columns:minmax(175px,1.4fr) minmax(155px,1fr)
  minmax(120px,.8fr) minmax(120px,.8fr)
- minmax(145px,1fr) auto auto;
+ minmax(110px,.8fr) minmax(145px,1fr) auto auto;
  align-items:end;gap:10px;
- max-width:1230px;width:100%;margin:20px auto 12px
+ max-width:1400px;width:100%;margin:20px auto 12px
 }
 .control{min-width:0;font-size:13px;font-weight:600}
 .control input,.control select{
@@ -177,8 +177,8 @@ main{position:relative;max-width:1600px;margin:auto;padding:20px 4vw 35px}
 .row .msg{overflow-wrap:anywhere}
 .empty{padding:12px 0;font-size:13px;color:#cbbfdf}
 .hint{text-align:center;font-size:11px;color:#e0d0ed;margin:8px 0 0}
-@media(max-width:1050px){
- .controls{grid-template-columns:repeat(3,minmax(0,1fr))}
+@media(max-width:1200px){
+ .controls{grid-template-columns:repeat(4,minmax(0,1fr))}
  .controls .btn{width:100%}
 }
 @media(max-width:750px){
@@ -254,6 +254,11 @@ main{position:relative;max-width:1600px;margin:auto;padding:20px 4vw 35px}
  <label class="control">
   Time (minutes)
   <input id="time" type="number" min="0" step="10" value="0">
+ </label>
+ <label class="control">
+  Minimum Quality
+  <input id="quality" type="number" min="0" max="100"
+         step="1" value="0" aria-label="Minimum quality out of 100">
  </label>
  <label class="control">
   Backup Equipment
@@ -341,6 +346,7 @@ main{position:relative;max-width:1600px;margin:auto;padding:20px 4vw 35px}
 </section>
 </main>
 </div>
-<script src="app.js?v=2"></script>
+<script src="app.js?v=3"></script>
 </body>
 </html>
+
