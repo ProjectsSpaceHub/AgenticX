@@ -189,6 +189,7 @@ Additional experiments and evaluation evidence are available in the five Jupyter
 | Maram Alhajri | [@vmmci](https://github.com/vmmci) |
 | Rahaf Saadeddin | [@soyrahaf](https://github.com/soyrahaf) |
 | Ghala Hazazi | [@Ghalaxxx](https://github.com/Ghalaxxx) |
+| Reema Aljnni | [@reema-aljhni](https://github.com/reema-aljhni) |
 
 **AGENTIC X — Studio 67**
 
