@@ -48,7 +48,6 @@ let agentStages = {};
 let activeAgent = null;
 let resultsReady = false;
 
-// Real-time status received from the Python backend.
 let liveAgentStatus = {};
 
 
@@ -263,13 +262,6 @@ function evaluationsForRound(round) {
   const evaluations =
     latestResult?.evaluations || [];
 
-  /*
-    Backend records four evaluations per
-    successfully evaluated round.
-
-    Never invent missing agent results.
-  */
-
   return evaluations.slice(
     (round - 1) * 4,
     round * 4
@@ -444,11 +436,6 @@ function showNextRoundControl() {
     button.type = "button";
     button.textContent = "Next Round →";
 
-    /*
-      Button stays disabled until ALL FOUR
-      agents reveal their decisions.
-    */
-
     button.disabled = !done;
 
     button.style.cssText = `
@@ -482,12 +469,7 @@ function showNextRoundControl() {
         return;
       }
 
-      /*
-        All agents move together.
-      */
-
       currentRound++;
-
       activeAgent = null;
 
       agentStages = Object.fromEntries(
@@ -499,8 +481,7 @@ function showNextRoundControl() {
 
     strip.append(button);
   } else if (done) {
-    const doneLabel =
-      document.createElement("span");
+    const doneLabel = document.createElement("span");
 
     doneLabel.textContent =
       "All recorded rounds reviewed";
@@ -693,6 +674,8 @@ function renderAgents() {
   });
 
   showNextRoundControl();
+  updateFinalDecisionDisplay();
+  renderLog();
 }
 
 
@@ -718,19 +701,10 @@ function handleAgentClick(name) {
   activeAgent = name;
 
   if (agentStages[name] === 0) {
-    // First click: explanation
     agentStages[name] = 1;
   } else if (agentStages[name] === 1) {
-    // Second click: actual verdict
     agentStages[name] = 2;
   }
-
-  /*
-    Additional clicks do nothing.
-
-    An individual agent cannot advance
-    to Round 2 alone.
-  */
 
   renderAgents();
 }
@@ -761,7 +735,40 @@ function renderLog() {
     return;
   }
 
-  messages.forEach((message, index) => {
+  const rounds = recordedRounds();
+  const lastRound = rounds.length
+    ? Math.max(...rounds)
+    : 1;
+
+  const fullyReviewed =
+    currentRound >= lastRound &&
+    allAgentsFinishedRound();
+
+  const visibleMessages = messages.filter(message => {
+    const round = Number(message.round);
+
+    if (
+      Number.isFinite(round) &&
+      round > currentRound
+    ) {
+      return false;
+    }
+
+    const isTerminal =
+      message.sender === "Coordinator" &&
+      (
+        message.performative === "ACCEPT" ||
+        message.receiver === "Human Manager"
+      );
+
+    if (isTerminal && !fullyReviewed) {
+      return false;
+    }
+
+    return true;
+  });
+
+  visibleMessages.forEach((message, index) => {
     const row = document.createElement("div");
     row.className = "row";
 
@@ -848,11 +855,6 @@ function controls() {
   );
 
   updateChanged();
-
-  /*
-    Old results must not be presented as
-    results for changed test conditions.
-  */
 
   if (
     resultsReady &&
@@ -989,9 +991,15 @@ function showDecision(result) {
   $("status").className =
     agreed ? "decision" : "";
 
+  const reason = String(result.reason || "")
+    .replace(
+      "execution deadline passed",
+      "execution deadline check passed"
+    );
+
   text(
     "explanation",
-    `${result.reason} · ` +
+    `${reason} · ` +
     `${result.rounds} round(s) · ` +
     `${(result.evaluations || []).length} evaluations`
   );
@@ -1032,6 +1040,51 @@ function showDecision(result) {
 
 
 /* =========================================
+   REVIEW-AWARE FINAL DECISION
+========================================= */
+
+function updateFinalDecisionDisplay() {
+  if (!resultsReady || !latestResult) {
+    return;
+  }
+
+  const rounds = recordedRounds();
+
+  const lastRound = rounds.length
+    ? Math.max(...rounds)
+    : 1;
+
+  const fullyReviewed =
+    currentRound >= lastRound &&
+    allAgentsFinishedRound();
+
+  if (
+    fullyReviewed ||
+    latestResult.status === "FAILED"
+  ) {
+    showDecision(latestResult);
+    return;
+  }
+
+  text("status", "Negotiation in progress");
+  $("status").className = "";
+
+  text(
+    "explanation",
+    "Review the four agent decisions in each round " +
+    "to reveal the final outcome."
+  );
+
+  [
+    "solution",
+    "cost",
+    "duration",
+    "safety"
+  ].forEach(id => text(id, "—"));
+}
+
+
+/* =========================================
    DISPLAY COMPLETED RUN
 ========================================= */
 
@@ -1053,7 +1106,7 @@ function displayCompletedRun(
   liveAgentStatus = {};
 
   resetReview();
-  showDecision(result);
+  updateFinalDecisionDisplay();
 
   $("run").disabled = false;
 
@@ -1107,7 +1160,6 @@ async function pollJob(jobId) {
       return;
     }
 
-    // Read actual per-agent status from Python.
     liveAgentStatus = job.agent_status || {};
 
     if (job.status === "COMPLETED") {
