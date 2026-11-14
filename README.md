@@ -1,4 +1,4 @@
-# AGENTIC X — Studio 67
+# AGENTIC X - Studio 67
 
 **Intelligent Multi-Agent Negotiation for Event Crisis Management**
 
